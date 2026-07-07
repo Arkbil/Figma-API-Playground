@@ -1,0 +1,28 @@
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.DS_Store
+*.log
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+*.local
+*.secret
+*.secrets
+*.key
+*.pem
+
+# Local Figma playground token/session store
+data/
+**/data/
+
+# Local Figma snapshots and runtime files
+figma-snapshot-*.json
+*.snapshot.json
+*.sqlite
+*.sqlite3
+*.db
