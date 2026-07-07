@@ -102,7 +102,7 @@ After login, every successfully loaded Figma file can be saved with:
 - Figma Personal Access Token
 - Figma File URL or file key
 
-Saved entries are stored locally in `figma-api-playground/data/session_store.json`. Logout only clears the browser login session; saved Figma entries remain available after the next login. They are removed only when using `Delete Saved` in the UI.
+Saved entries are stored locally in `figma-api-playground/data/session_store.local.json` by default. You can override this path with `FIGMA_PLAYGROUND_STORE`. Logout only clears the browser login session; saved Figma entries remain available on that same local machine after the next login. They are removed only when using `Delete Saved` in the UI.
 
 Important: the saved token is stored as local plaintext JSON for this playground. Keep this local-only and do not commit/share `figma-api-playground/data/`.
 
