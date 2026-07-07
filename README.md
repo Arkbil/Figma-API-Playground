@@ -1,3 +1,5 @@
+﻿# Figma API Playground
+
 Local-only website for testing direct Figma API access before integrating it into FUT Automation.
 
 This playground intentionally uses only Python standard library modules. It does not require Flask, pip packages, or a virtual environment. This matters because the current local Python installation has a broken pip/ensurepip setup.
