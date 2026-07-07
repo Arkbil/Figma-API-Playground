@@ -2,105 +2,129 @@
 
 Local-only website for testing direct Figma API access before integrating it into FUT Automation.
 
-This playground intentionally uses only Python standard library modules. It does not require Flask, pip packages, or a virtual environment. This matters because the current local Python installation has a broken pip/ensurepip setup.
+This playground intentionally uses only Python standard library modules. It does **not** require Flask, pip packages, or a virtual environment. This matters because the current local Python installation has a broken `pip`/`ensurepip` setup.
 
-What It Tests
-Phase 1 - File URL import
+## What It Tests
 
-Paste a Figma Personal Access Token.
-Paste a Figma file URL or file key.
-The app loads pages and top-level frames from GET /v1/files/:key.
-Phase 2 - Frame order and preview
+1. **Phase 1 - File URL import**
+   - Paste a Figma Personal Access Token.
+   - Paste a Figma file URL or file key.
+   - The app loads pages and top-level frames from `GET /v1/files/:key`.
 
-Select a page.
-Frames are sorted by canvas position: top-to-bottom, then left-to-right.
-Render only flow source/destination frames after Analyze Flow using GET /v1/images/:key.
-Manually move frames up/down.
-Export the final frame order as JSON.
-Phase 3 - Prototype flow exploration
+2. **Phase 2 - Frame order and preview**
+   - Select a page.
+   - Frames are sorted by canvas position: top-to-bottom, then left-to-right.
+   - Render only flow source/destination frames after **Analyze Flow** using `GET /v1/images/:key`.
+   - Manually move frames up/down.
+   - Export the final frame order as JSON.
 
-Reads interaction edges from the loaded file JSON when available, maps component-level interactions back to their parent frames, and separates screen-flow candidates from noisy/internal interactions.
-The analyzer first looks for official Figma flow starting points such as flowStartingPoints/prototypeStartNodeID, builds multi-screen paths, merges similar branches, then groups them into detected journeys/scenarios for targeted export. Figma SECTION nodes are treated as the primary scenario boundary when available; internal prototype connections inside that section become the journey flow for export. Long lists are collapsed by default and can be expanded with More buttons. If no clean path appears, use frame ordering/manual ordering as fallback.
-Setup
+3. **Phase 3 - Prototype flow exploration**
+   - Reads interaction edges from the loaded file JSON when available, maps component-level interactions back to their parent frames, and separates screen-flow candidates from noisy/internal interactions.
+   - The analyzer first looks for official Figma flow starting points such as `flowStartingPoints`/`prototypeStartNodeID`, builds multi-screen paths, merges similar branches, then groups them into detected journeys/scenarios for targeted export. Figma SECTION nodes are treated as the primary scenario boundary when available; internal prototype connections inside that section become the journey flow for export. Long lists are collapsed by default and can be expanded with More buttons. If no clean path appears, use frame ordering/manual ordering as fallback.
+
+## Setup
+
 From the repository root:
 
+```powershell
 cd figma-api-playground
 python app.py
+```
+
 Open:
 
+```text
 http://127.0.0.1:5050
-Stop the server with Ctrl+C in the terminal window that runs it.
+```
 
-Token Handling
+Stop the server with `Ctrl+C` in the terminal window that runs it.
+
+## Token Handling
+
 The Figma token is entered through the web form. It is kept in browser memory and sent to the local server only when calling Figma API endpoints.
 
-The token is not written to .env, JSON, SQLite, MongoDB, or any project file. The server stores the loaded Figma file JSON in memory only, keyed by a temporary session id, so Phase 3 can inspect prototype interactions without asking Figma again.
+The token is not written to `.env`, JSON, SQLite, MongoDB, or any project file. The server stores the loaded Figma file JSON in memory only, keyed by a temporary session id, so Phase 3 can inspect prototype interactions without asking Figma again.
 
 For testing, create a Figma Personal Access Token with read access to file content. The token can only access files your Figma account is allowed to view.
 
-How To Use
-Create or copy a Figma Personal Access Token from Figma account settings.
+## How To Use
 
-Open the playground at http://127.0.0.1:5050.
+1. Create or copy a Figma Personal Access Token from Figma account settings.
+2. Open the playground at `http://127.0.0.1:5050`.
+3. Paste the token.
+4. Paste a Figma file URL, for example:
 
-Paste the token.
+   ```text
+   https://www.figma.com/design/FILE_KEY/File-Name
+   ```
 
-Paste a Figma file URL, for example:
+5. Click **Load File**.
+6. Pick a page and inspect the frames.
+7. Click **Analyze Flow** to build the cleaned flow graph and render complete multi-screen path previews.
+8. Use **Up** and **Down** to manually adjust frame order.
+9. Click **Export JSON** to download the selected frame order.
+10. Click **Read Prototype Edges** to inspect prototype links if Figma returns interaction metadata.
 
-https://www.figma.com/design/FILE_KEY/File-Name
-Click Load File.
+## Known Limits
 
-Pick a page and inspect the frames.
+- The playground does not write imported frames into the FUT Automation database.
+- Preview image URLs are generated by Figma and may expire.
+- Prototype edges depend on the metadata returned by Figma. If a file does not expose interaction data, use canvas/manual ordering.
+- Rendering many frames at once can be slower and may hit Figma API limits. The server caps one render request to the first 50 selected frames.
+- The app binds to `127.0.0.1`, so it is intended for local testing only.
 
-Click Analyze Flow to build the cleaned flow graph and render complete multi-screen path previews.
+## Files
 
-Use Up and Down to manually adjust frame order.
+- `app.py` - local HTTP server and Figma API proxy.
+- `templates/index.html` - single-page UI.
+- `static/app.js` - UI state, API calls, ordering, export behavior.
+- `static/styles.css` - local playground styling.
+- `requirements.txt` - left empty on purpose because this version has no external dependency.
 
-Click Export JSON to download the selected frame order.
 
-Click Read Prototype Edges to inspect prototype links if Figma returns interaction metadata.
 
-Known Limits
-The playground does not write imported frames into the FUT Automation database.
-Preview image URLs are generated by Figma and may expire.
-Prototype edges depend on the metadata returned by Figma. If a file does not expose interaction data, use canvas/manual ordering.
-Rendering many frames at once can be slower and may hit Figma API limits. The server caps one render request to the first 50 selected frames.
-The app binds to 127.0.0.1, so it is intended for local testing only.
-Files
-app.py - local HTTP server and Figma API proxy.
-templates/index.html - single-page UI.
-static/app.js - UI state, API calls, ordering, export behavior.
-static/styles.css - local playground styling.
-requirements.txt - left empty on purpose because this version has no external dependency.
-Local Login & Saved Figma Entries
+
+
+
+
+
+
+## Local Login & Saved Figma Entries
+
 Default local login:
 
-ID: admin
-Password: admin by default, or set FIGMA_PLAYGROUND_PASSWORD before running python app.py.
+- ID: `admin`
+- Password: `admin` by default, or set `FIGMA_PLAYGROUND_PASSWORD` before running `python app.py`.
+
 After login, every successfully loaded Figma file can be saved with:
 
-Judul Figma
-Figma Personal Access Token
-Figma File URL or file key
-Saved entries are stored locally in figma-api-playground/data/session_store.json. Logout only clears the browser login session; saved Figma entries remain available after the next login. They are removed only when using Delete Saved in the UI.
+- Judul Figma
+- Figma Personal Access Token
+- Figma File URL or file key
 
-Important: the saved token is stored as local plaintext JSON for this playground. Keep this local-only and do not commit/share figma-api-playground/data/.
+Saved entries are stored locally in `figma-api-playground/data/session_store.json`. Logout only clears the browser login session; saved Figma entries remain available after the next login. They are removed only when using `Delete Saved` in the UI.
 
-Local Figma Snapshot Export / Import
-Use Download Snapshot after a Figma file is loaded to save the current Figma API response as a local JSON file. The snapshot does not include the Personal Access Token.
+Important: the saved token is stored as local plaintext JSON for this playground. Keep this local-only and do not commit/share `figma-api-playground/data/`.
 
-Use Import Snapshot JSON to load that JSON file back into the playground without calling the Figma API. This reduces rate-limit usage for repeated local testing.
+## Local Figma Snapshot Export / Import
+
+Use `Download Snapshot` after a Figma file is loaded to save the current Figma API response as a local JSON file. The snapshot does not include the Personal Access Token.
+
+Use `Import Snapshot JSON` to load that JSON file back into the playground without calling the Figma API. This reduces rate-limit usage for repeated local testing.
 
 Snapshot behavior:
 
-Pages, sections, and frames can be read from the imported snapshot.
-Analyze Flow runs against the imported JSON data without calling Figma again.
-Preview Page image rendering still requires Figma Images API and a token, so offline snapshots focus on structure/flow data, not fresh thumbnails.
-If the snapshot was created before full flow analysis, it may only contain metadata-depth-3 data.
-Current Preview Layout
+- Pages, sections, and frames can be read from the imported snapshot.
+- Analyze Flow runs against the imported JSON data without calling Figma again.
+- Preview Page image rendering still requires Figma Images API and a token, so offline snapshots focus on structure/flow data, not fresh thumbnails.
+- If the snapshot was created before full flow analysis, it may only contain `metadata-depth-3` data.
+
+## Current Preview Layout
+
 The active UI no longer exposes Prototype Flow Analyzer as Phase 3.
 
-Phase 2: Pages & Frames list plus frame order JSON export.
-Phase 3: Section Preview / Render for the selected page.
-Frame Preview: Frame Preview / Render for the selected page.
+- Phase 2: Pages & Frames list plus frame order JSON export.
+- Phase 3: Section Preview / Render for the selected page.
+- Frame Preview: Frame Preview / Render for the selected page.
+
 Rendering sections/frames uses Figma Images API and may hit Figma rate limits. Imported snapshots can still show structure without calling Figma API, but image rendering requires a token-backed loaded session.
