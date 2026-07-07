@@ -27,7 +27,7 @@
       <div>
         <span class="eyebrow">LOCAL TEST TOOL</span>
         <h1>Figma API Playground</h1>
-        <p>Test file import, frame ordering, local snapshots, and section/frame previews before integrating Figma into FUT Automation.</p>
+        <p>Load a Figma file once, keep its token in a local-only vault, then reuse Saved Figma for future section and frame renders.</p>
       </div>
       <div class="top-actions">
         <span id="activeUser" class="user-badge">admin</span>
@@ -42,7 +42,19 @@
           <span class="step">Phase 1</span>
           <h2>Load Figma File</h2>
         </div>
-        <small>Saved Figma entries are stored locally. Downloaded snapshots do not include tokens.</small>
+        <small>Saved Figma entries stay on this laptop. Snapshots do not include tokens.</small>
+      </div>
+      <div class="vault-strip" aria-live="polite">
+        <div>
+          <span id="savedCount">0 saved</span>
+          <strong>Local token vault</strong>
+          <p id="vaultStatus">No saved Figma entries on this laptop yet.</p>
+        </div>
+        <div>
+          <span>Render status</span>
+          <strong>Active credential</strong>
+          <p id="activeCredentialStatus">No active render session.</p>
+        </div>
       </div>
       <div class="saved-projects">
         <label>Saved Figma
@@ -55,6 +67,7 @@
           <button id="deleteSavedProject" class="btn btn-ghost" type="button" disabled>Delete Saved</button>
         </div>
       </div>
+      <p id="selectedSavedHint" class="field-note">Choose a saved file to reuse its local token for rendering.</p>
       <form id="loadForm" class="form-grid">
         <label class="span-2">Judul Figma
           <input name="figma_title" autocomplete="off" placeholder="Contoh: V-NSP Main Flow" required>
@@ -115,6 +128,36 @@
         <button id="renderFrames" class="btn btn-secondary" type="button" disabled>Render Frames</button>
       </div>
       <div id="framePreviewGrid" class="page-preview empty">Load a file, then render frames from the selected page.</div>
+    </section>
+
+    <section class="guide-panel" aria-labelledby="localDocsTitle">
+      <div>
+        <span class="eyebrow">LOCAL DOCUMENTATION</span>
+        <h2 id="localDocsTitle">How Saved Figma Works</h2>
+        <p>Use <strong>Load & Save File</strong> for token-backed rendering. Use snapshots only when you need offline structure review.</p>
+      </div>
+      <div class="guide-grid">
+        <article>
+          <span>01</span>
+          <h3>First load on a laptop</h3>
+          <p>Enter title, Figma token, and file URL. A successful load writes the saved entry to <code>data/session_store.local.json</code>.</p>
+        </article>
+        <article>
+          <span>02</span>
+          <h3>Next sessions</h3>
+          <p>Pick the entry from Saved Figma and click Load Saved. The server recreates a token-backed session so Render Sections and Render Frames work again.</p>
+        </article>
+        <article>
+          <span>03</span>
+          <h3>Git safety</h3>
+          <p>The local store is ignored by Git. Another laptop starts empty and must save its own Figma token once.</p>
+        </article>
+        <article>
+          <span>04</span>
+          <h3>Snapshot limit</h3>
+          <p>Snapshot JSON does not include tokens. It can load pages and frames, but render still needs a token-backed load session.</p>
+        </article>
+      </div>
     </section>
   </main>
 

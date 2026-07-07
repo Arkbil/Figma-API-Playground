@@ -19,6 +19,7 @@ const state = {
   openMergedFlows: {},
   openJourneys: {},
   savedProjects: [],
+  savedProjectId: '',
   username: '',
   snapshotImported: false,
 };
@@ -88,7 +89,9 @@ function resetActiveFile(message = 'Session cleared. Load a Figma file again.') 
   state.flowImageUrls = {};
   state.openMergedFlows = {};
   state.openJourneys = {};
+  state.savedProjectId = '';
   $('#fileSummary').hidden = true;
+  updateVaultStatus();
   $('#pageSelect').innerHTML = '';
   $('#pageSelect').disabled = true;
   setExportButtons(true);
@@ -104,7 +107,7 @@ function setExportButtons(disabled) {
   $('#exportCheckedFrames').disabled = disabled;
   $('#exportAllPages').disabled = disabled;
 }
-function renderSavedProjects(projects = state.savedProjects) {
+function renderSavedProjects(projects = state.savedProjects, selectedId = state.savedProjectId) {
   state.savedProjects = projects || [];
   const select = $('#savedProjectSelect');
   select.innerHTML = '';
@@ -115,6 +118,7 @@ function renderSavedProjects(projects = state.savedProjects) {
     select.appendChild(option);
     $('#loadSavedProject').disabled = true;
     $('#deleteSavedProject').disabled = true;
+    updateVaultStatus();
     return;
   }
   const empty = document.createElement('option');
@@ -128,13 +132,46 @@ function renderSavedProjects(projects = state.savedProjects) {
     option.textContent = `${project.title || fileLabel} | ${fileLabel} | ${project.token_mask || 'saved token'}`;
     select.appendChild(option);
   });
+  if (selectedId && state.savedProjects.some((project) => project.id === selectedId)) {
+    select.value = selectedId;
+  }
   $('#loadSavedProject').disabled = !select.value;
   $('#deleteSavedProject').disabled = !select.value;
+  updateVaultStatus();
+}
+
+function selectedSavedProject() {
+  const select = $('#savedProjectSelect');
+  return state.savedProjects.find((project) => project.id === select?.value) || null;
+}
+
+function updateVaultStatus() {
+  const countEl = $('#savedCount');
+  const statusEl = $('#vaultStatus');
+  const activeEl = $('#activeCredentialStatus');
+  if (countEl) countEl.textContent = `${state.savedProjects.length} saved`;
+  if (statusEl) {
+    statusEl.textContent = state.savedProjects.length
+      ? 'Local token vault is ready on this laptop. It is ignored by Git.'
+      : 'No saved Figma entries on this laptop yet.';
+  }
+  if (activeEl) {
+    if (!state.sessionId) {
+      activeEl.textContent = 'No active render session.';
+    } else if (state.snapshotImported) {
+      activeEl.textContent = 'Snapshot loaded. Structure works, render needs token-backed Load Saved or Load & Save.';
+    } else if (state.savedProjectId) {
+      activeEl.textContent = 'Token-backed session active from Saved Figma. Render is available.';
+    } else {
+      activeEl.textContent = 'Token-backed session active from the form. Render is available.';
+    }
+  }
 }
 
 function applyLoadedFile(data, token = '') {
   state.token = token;
   state.sessionId = data.session_id;
+  state.savedProjectId = data.saved_project_id || state.savedProjectId || '';
   state.fileKey = data.file_key;
   state.fileName = data.file_name;
   state.pages = data.pages || [];
@@ -145,7 +182,7 @@ function applyLoadedFile(data, token = '') {
   state.showAllNoisyEdges = false;
   state.openMergedFlows = {};
   state.openJourneys = {};
-  if (data.saved_projects) renderSavedProjects(data.saved_projects);
+  if (data.saved_projects) renderSavedProjects(data.saved_projects, state.savedProjectId);
   $('#fileSummary').hidden = false;
   $('#fileSummary').textContent = `${data.figma_title || data.file_name || '(untitled file)'} | ${data.frame_count} top-level frames | ${data.pages?.length || 0} pages | file key ${data.file_key} | ${data.load_mode || 'full'} | last modified ${data.last_modified || '-'}`;
   renderPageOptions();
@@ -154,6 +191,7 @@ function applyLoadedFile(data, token = '') {
   $('#renderSections').disabled = state.snapshotImported && !state.token;
   $('#renderFrames').disabled = state.snapshotImported && !state.token;
   $('#downloadSnapshot').disabled = false;
+  updateVaultStatus();
 }
 
 async function refreshSavedProjects() {
@@ -456,7 +494,7 @@ function mergedGroupElement(group) {
     <section class="merged-flow-section">
       <div class="merged-flow-title">
         <strong>${escapeHtml(group.name || `Flow ${group.index}`)}: starts at ${escapeHtml(group.root_name || group.root_id)}</strong>
-        <span>${group.path_count || 0} paths merged · ${group.branch_count || 0} branch points</span>
+        <span>${group.path_count || 0} paths merged - ${group.branch_count || 0} branch points</span>
       </div>
       <div class="merged-tree">${treeNodeElement(group.tree, 0)}</div>
     </section>
@@ -593,8 +631,17 @@ $('#loadForm').addEventListener('submit', async (event) => {
 
 $('#savedProjectSelect').addEventListener('change', (event) => {
   const hasValue = Boolean(event.target.value);
+  state.savedProjectId = event.target.value || '';
   $('#loadSavedProject').disabled = !hasValue;
   $('#deleteSavedProject').disabled = !hasValue;
+  const project = selectedSavedProject();
+  const hint = $('#selectedSavedHint');
+  if (hint) {
+    hint.textContent = project
+      ? `${project.title || project.file_name || 'Saved Figma'} is ready to load with its local token.`
+      : 'Choose a saved file to reuse its local token for rendering.';
+  }
+  updateVaultStatus();
 });
 
 $('#loadSavedProject').addEventListener('click', async () => {
@@ -604,6 +651,7 @@ $('#loadSavedProject').addEventListener('click', async () => {
   $('#loadSavedProject').textContent = 'Loading...';
   try {
     const data = await postJson('/api/load-file', {saved_project_id: savedId}, 45000);
+    state.savedProjectId = savedId;
     applyLoadedFile(data, '');
     toast('Saved Figma loaded without re-entering token.');
   } catch (error) {
@@ -619,7 +667,10 @@ $('#deleteSavedProject').addEventListener('click', async () => {
   if (!savedId) return;
   try {
     const data = await postJson('/api/delete-saved-figma', {id: savedId});
+    state.savedProjectId = '';
     renderSavedProjects(data.projects || []);
+    const hint = $('#selectedSavedHint');
+    if (hint) hint.textContent = 'Choose a saved file to reuse its local token for rendering.';
     toast('Saved Figma deleted.');
   } catch (error) {
     showAlert('Delete Saved Failed', error.message || 'Failed to delete saved Figma.', 'error');
