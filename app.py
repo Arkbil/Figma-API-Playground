@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import mimetypes
@@ -6,9 +6,11 @@ import os
 import re
 import secrets
 import sys
+import io
 import urllib.error
 import urllib.parse
 import urllib.request
+import zipfile
 from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -21,6 +23,21 @@ TEMPLATE_DIR = ROOT / "templates"
 FIGMA_API_BASE = "https://api.figma.com/v1"
 DEFAULT_TIMEOUT = 30
 DATA_DIR = ROOT / "data"
+
+
+def load_local_env() -> None:
+    env_path = ROOT / ".env"
+    if not env_path.exists():
+        return
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+
+load_local_env()
 SESSION_STORE_FILE = Path(os.getenv("FIGMA_PLAYGROUND_STORE", DATA_DIR / "session_store.local.json"))
 ADMIN_USERNAME = "admin"
 ADMIN_PASSWORD = os.getenv("FIGMA_PLAYGROUND_PASSWORD", "admin")
@@ -69,7 +86,7 @@ def figma_get(
             message = data.get("err") or data.get("message") or body
         except Exception:
             message = body or f"Figma API error {exc.code}"
-        raise FigmaApiError(message, exc.code) from exc
+        raise FigmaApiError(friendly_figma_error(exc.code, str(message)), exc.code) from exc
     except TimeoutError as exc:
         raise FigmaApiError(
             "Request ke Figma API timeout. Coba load ringan dulu, atau file ini terlalu besar untuk full analysis.",
@@ -82,6 +99,53 @@ def figma_get(
     if not isinstance(data, dict):
         raise FigmaApiError("Respons Figma bukan JSON object.", 502)
     return data
+
+
+def download_binary(url: str, timeout: int = DEFAULT_TIMEOUT) -> tuple[bytes, str]:
+    request = urllib.request.Request(
+        url,
+        headers={"Accept": "application/pdf,application/octet-stream,*/*", "User-Agent": "FigmaApiPlayground/1.0"},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.read(), response.headers.get("Content-Type", "")
+    except TimeoutError as exc:
+        raise FigmaApiError("Download PDF dari Figma terlalu lama. Coba export section lebih sedikit dulu.", 504) from exc
+    except urllib.error.URLError as exc:
+        raise FigmaApiError(f"PDF dari Figma belum bisa didownload: {exc.reason}", 502) from exc
+
+
+def image_bytes_to_pdf(image_bytes: bytes) -> bytes:
+    try:
+        from PIL import Image
+    except Exception as exc:
+        raise FigmaApiError("Figma menolak export PDF langsung, dan Pillow belum tersedia untuk membuat PDF fallback dari image.", 500) from exc
+
+    with Image.open(io.BytesIO(image_bytes)) as image:
+        if image.mode in {"RGBA", "LA", "P"}:
+            background = Image.new("RGB", image.size, (255, 255, 255))
+            if image.mode == "P":
+                image = image.convert("RGBA")
+            alpha = image.getchannel("A") if image.mode in {"RGBA", "LA"} else None
+            background.paste(image.convert("RGB"), mask=alpha)
+            image = background
+        else:
+            image = image.convert("RGB")
+        output = io.BytesIO()
+        image.save(output, format="PDF", resolution=144.0)
+        return output.getvalue()
+
+
+def render_single_node_url(token: str, file_key: str, node_id: str, fmt: str, scale: str = "1") -> str:
+    params = {"ids": node_id, "format": fmt}
+    if fmt != "pdf":
+        params["scale"] = scale
+    data = figma_get(token, f"/images/{file_key}", params, timeout=90)
+    images = data.get("images") or {}
+    if not isinstance(images, dict):
+        return ""
+    return str(images.get(node_id) or "")
 
 
 def frame_count_from_pages(pages: list[dict[str, Any]]) -> int:
@@ -180,6 +244,20 @@ class FigmaApiError(RuntimeError):
     def __init__(self, message: str, status: int = 500) -> None:
         super().__init__(message)
         self.status = status
+
+
+def friendly_figma_error(status: int, message: str) -> str:
+    if status == 400:
+        return "Request ke Figma belum valid. Coba cek file key, node/section yang dipilih, atau kurangi jumlah section."
+    if status == 403:
+        return "Token Figma tidak bisa dipakai untuk file ini. Cek apakah token masih aktif dan akun tersebut punya akses ke file."
+    if status == 404:
+        return "File Figma tidak ditemukan. Cek lagi URL/file key dan pastikan file bisa dibuka oleh akun token tersebut."
+    if status == 429:
+        return "Figma sedang membatasi request. Tunggu sekitar satu menit, lalu coba lagi dengan section lebih sedikit."
+    if status >= 500:
+        return "Figma belum berhasil membuat respons/render. Coba ulangi, atau export section lebih sedikit dulu."
+    return message or "Request ke Figma belum berhasil."
 
 
 def extract_pages(file_json: dict[str, Any]) -> list[dict[str, Any]]:
@@ -904,6 +982,11 @@ def safe_filename(value: str) -> str:
     return cleaned or "figma-export.json"
 
 
+def response_filename(value: str, fallback: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", value).strip("-")
+    return cleaned or fallback
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "FigmaApiPlayground/1.0"
 
@@ -928,28 +1011,31 @@ class Handler(BaseHTTPRequestHandler):
         self.send_error(HTTPStatus.NOT_FOUND)
 
     def do_POST(self) -> None:
+        parsed_path = urllib.parse.urlparse(self.path).path.rstrip("/") or "/"
         try:
-            if self.path == "/api/login":
+            if parsed_path == "/api/login":
                 self.api_login()
-            elif self.path == "/api/logout":
+            elif parsed_path == "/api/logout":
                 self.api_logout()
-            elif self.path == "/api/saved-figma-list":
+            elif parsed_path == "/api/saved-figma-list":
                 self.api_saved_figma_list()
-            elif self.path == "/api/delete-saved-figma":
+            elif parsed_path == "/api/delete-saved-figma":
                 self.api_delete_saved_figma()
-            elif self.path == "/api/load-file":
+            elif parsed_path == "/api/load-file":
                 self.api_load_file()
-            elif self.path == "/api/render-frames":
+            elif parsed_path == "/api/render-frames":
                 self.api_render_frames()
-            elif self.path == "/api/prototype":
+            elif parsed_path == "/api/prototype":
                 self.api_prototype()
-            elif self.path == "/api/export-order":
+            elif parsed_path == "/api/export-order":
                 self.api_export_order()
-            elif self.path == "/api/export-snapshot":
+            elif parsed_path == "/api/export-fut-section-pdfs":
+                self.api_export_fut_section_pdfs()
+            elif parsed_path == "/api/export-snapshot":
                 self.api_export_snapshot()
-            elif self.path == "/api/import-snapshot":
+            elif parsed_path == "/api/import-snapshot":
                 self.api_import_snapshot()
-            elif self.path == "/api/clear-session":
+            elif parsed_path == "/api/clear-session":
                 self.api_clear_session()
             else:
                 self.send_error(HTTPStatus.NOT_FOUND)
@@ -1190,6 +1276,137 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(raw)))
         self.end_headers()
         self.wfile.write(raw)
+
+    def api_export_fut_section_pdfs(self) -> None:
+        self.require_username()
+        payload = self.read_json()
+        session_id = str(payload.get("session_id") or "")
+        cached = SESSION_CACHE.get(session_id, {}) if session_id else {}
+        token = str(payload.get("token") or cached.get("token") or "").strip()
+        file_key = str(payload.get("file_key") or cached.get("file_key") or "").strip()
+        file_name = str(payload.get("file_name") or cached.get("file_name") or "figma").strip()
+        page_name = str(payload.get("page_name") or "").strip()
+        raw_sections = payload.get("sections") or []
+        sections = [item for item in raw_sections if isinstance(item, dict) and str(item.get("id") or "").strip()]
+
+        if not token or not file_key:
+            self.send_json(
+                {
+                    "error": "Export PDF perlu Saved Figma atau Load & Save File yang masih punya token. Snapshot saja belum cukup untuk membuat PDF visual."
+                },
+                400,
+            )
+            return
+        if not sections:
+            self.send_json({"error": "Pilih minimal satu section dulu sebelum export PDF untuk FUT Automation."}, 400)
+            return
+        if len(sections) > 50:
+            self.send_json({"error": "Export dibatasi maksimal 50 section sekali jalan supaya Figma tidak timeout."}, 400)
+            return
+
+        manifest = {
+            "source": "figma-api-playground",
+            "export_type": "fut_split_section_pdfs",
+            "file_key": file_key,
+            "file_name": file_name,
+            "page_name": page_name,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "contains_token": False,
+            "requested_count": len(sections),
+            "exported_count": 0,
+            "failed_sections": [],
+            "sections": [],
+        }
+        zip_buffer = io.BytesIO()
+        used_names: set[str] = set()
+        with zipfile.ZipFile(zip_buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for index, section in enumerate(sections, start=1):
+                section_id = str(section.get("id") or "")
+                section_name = str(section.get("name") or section_id)
+                pdf_bytes = b""
+                content_type = ""
+                render_mode = "figma_pdf"
+                try:
+                    pdf_url = render_single_node_url(token, file_key, section_id, "pdf")
+                    if pdf_url:
+                        pdf_bytes, content_type = download_binary(pdf_url, timeout=90)
+                except FigmaApiError:
+                    pdf_bytes = b""
+
+                if not pdf_bytes:
+                    render_mode = "png_wrapped_pdf"
+                    fallback_errors: list[str] = []
+                    for fallback_scale in ("0.5", "0.25", "0.1"):
+                        try:
+                            image_url = render_single_node_url(token, file_key, section_id, "png", scale=fallback_scale)
+                            if not image_url:
+                                fallback_errors.append(f"scale {fallback_scale}: Figma belum mengirim link image.")
+                                continue
+                            image_bytes, content_type = download_binary(image_url, timeout=90)
+                            pdf_bytes = image_bytes_to_pdf(image_bytes)
+                            content_type = "application/pdf"
+                            render_mode = f"png_wrapped_pdf_scale_{fallback_scale}"
+                            break
+                        except FigmaApiError as exc:
+                            fallback_errors.append(f"scale {fallback_scale}: {exc}")
+                    if not pdf_bytes:
+                        manifest["failed_sections"].append(
+                            {
+                                "id": section_id,
+                                "name": section_name,
+                                "reason": " | ".join(fallback_errors) or "Figma belum mengirim hasil render.",
+                            }
+                        )
+                        continue
+
+                if not pdf_bytes:
+                    manifest["failed_sections"].append({"id": section_id, "name": section_name, "reason": "Figma belum mengirim hasil render untuk section ini."})
+                    continue
+                filename_base = response_filename(f"flow-{index:02d}-{section_name}", f"flow-{index:02d}")
+                filename = f"{filename_base}.pdf"
+                counter = 2
+                while filename in used_names:
+                    filename = f"{filename_base}-{counter}.pdf"
+                    counter += 1
+                used_names.add(filename)
+                archive.writestr(filename, pdf_bytes)
+                manifest["sections"].append(
+                    {
+                        "order": index,
+                        "id": section_id,
+                        "name": section_name,
+                        "type": section.get("type") or "SECTION",
+                        "pdf": filename,
+                        "content_type": content_type,
+                        "render_mode": render_mode,
+                    }
+                )
+            manifest["exported_count"] = len(manifest["sections"])
+            archive.writestr("manifest.json", json.dumps(manifest, indent=2, ensure_ascii=False).encode("utf-8"))
+
+        if manifest["exported_count"] <= 0:
+            reasons = "; ".join(
+                f"{item.get('name') or item.get('id')}: {item.get('reason') or 'gagal dirender'}"
+                for item in manifest["failed_sections"][:5]
+            )
+            self.send_json(
+                {
+                    "error": "PDF belum berhasil dibuat dari section yang dipilih. Coba section lebih kecil atau render section preview dulu. "
+                    + (f"Detail: {reasons}" if reasons else "")
+                },
+                502,
+            )
+            return
+
+        raw = zip_buffer.getvalue()
+        filename = response_filename(f"fut-section-pdfs-{file_name or file_key}", "fut-section-pdfs") + ".zip"
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/zip")
+        self.send_header("Content-Disposition", f"attachment; filename={filename}")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
     def api_export_snapshot(self) -> None:
         self.require_username()
         payload = self.read_json()
@@ -1268,9 +1485,13 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json({"ok": True})
 
 
+class ReusableThreadingHTTPServer(ThreadingHTTPServer):
+    allow_reuse_address = True
+
+
 def main() -> None:
     port = int(os.getenv("PORT", "5050"))
-    server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    server = ReusableThreadingHTTPServer(("127.0.0.1", port), Handler)
     print(f"Figma API Playground running at http://127.0.0.1:{port}")
     print("Press Ctrl+C to stop.")
     try:
@@ -1283,6 +1504,7 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
 
 
 

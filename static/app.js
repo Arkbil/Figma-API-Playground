@@ -19,12 +19,14 @@ const state = {
   openMergedFlows: {},
   openJourneys: {},
   savedProjects: [],
+  savedProjectId: '',
   username: '',
   snapshotImported: false,
+  checkedFrameIds: new Set(),
 };
 
 const $ = (selector) => document.querySelector(selector);
-const FRAME_PREVIEW_LIMIT = 8;
+const FRAME_PREVIEW_LIMIT = 10;
 const CLEAN_EDGE_LIMIT = 8;
 const NOISY_EDGE_LIMIT = 20;
 
@@ -88,7 +90,10 @@ function resetActiveFile(message = 'Session cleared. Load a Figma file again.') 
   state.flowImageUrls = {};
   state.openMergedFlows = {};
   state.openJourneys = {};
+  state.savedProjectId = '';
+  state.checkedFrameIds = new Set();
   $('#fileSummary').hidden = true;
+  updateVaultStatus();
   $('#pageSelect').innerHTML = '';
   $('#pageSelect').disabled = true;
   setExportButtons(true);
@@ -103,8 +108,10 @@ function setExportButtons(disabled) {
   $('#exportCurrentPage').disabled = disabled;
   $('#exportCheckedFrames').disabled = disabled;
   $('#exportAllPages').disabled = disabled;
+  const futExport = $('#exportFutPdfs');
+  if (futExport) futExport.disabled = disabled;
 }
-function renderSavedProjects(projects = state.savedProjects) {
+function renderSavedProjects(projects = state.savedProjects, selectedId = state.savedProjectId) {
   state.savedProjects = projects || [];
   const select = $('#savedProjectSelect');
   select.innerHTML = '';
@@ -115,6 +122,7 @@ function renderSavedProjects(projects = state.savedProjects) {
     select.appendChild(option);
     $('#loadSavedProject').disabled = true;
     $('#deleteSavedProject').disabled = true;
+    updateVaultStatus();
     return;
   }
   const empty = document.createElement('option');
@@ -128,13 +136,56 @@ function renderSavedProjects(projects = state.savedProjects) {
     option.textContent = `${project.title || fileLabel} | ${fileLabel} | ${project.token_mask || 'saved token'}`;
     select.appendChild(option);
   });
+  if (selectedId && state.savedProjects.some((project) => project.id === selectedId)) {
+    select.value = selectedId;
+  }
   $('#loadSavedProject').disabled = !select.value;
   $('#deleteSavedProject').disabled = !select.value;
+  updateVaultStatus();
+}
+
+function selectedSavedProject() {
+  const select = $('#savedProjectSelect');
+  return state.savedProjects.find((project) => project.id === select?.value) || null;
+}
+
+function updateVaultStatus() {
+  const countEl = $('#savedCount');
+  const statusEl = $('#vaultStatus');
+  const activeEl = $('#activeCredentialStatus');
+  const modeEl = $('#apiModeStatus');
+  if (countEl) countEl.textContent = `${state.savedProjects.length} saved`;
+  if (statusEl) {
+    statusEl.textContent = state.savedProjects.length
+      ? 'Local token vault is ready on this laptop. It is ignored by Git.'
+      : 'No saved Figma entries on this laptop yet.';
+  }
+  if (activeEl) {
+    if (!state.sessionId) {
+      activeEl.textContent = 'No active render session.';
+    } else if (state.snapshotImported) {
+      activeEl.textContent = 'Snapshot loaded. Structure works, render needs token-backed Load Saved or Load & Save.';
+    } else if (state.savedProjectId) {
+      activeEl.textContent = 'Token-backed session active from Saved Figma. Render is available.';
+    } else {
+      activeEl.textContent = 'Token-backed session active from the form. Render is available.';
+    }
+  }
+  if (modeEl) {
+    if (!state.sessionId) {
+      modeEl.textContent = 'No active file yet. Load Figma first.';
+    } else if (state.snapshotImported) {
+      modeEl.textContent = 'Snapshot mode: pages and tree can be reviewed, but render/export PDF is disabled until you Load Saved or Load & Save with token.';
+    } else {
+      modeEl.textContent = 'API mode: render section/frame and export checked section PDFs are available.';
+    }
+  }
 }
 
 function applyLoadedFile(data, token = '') {
   state.token = token;
   state.sessionId = data.session_id;
+  state.savedProjectId = data.saved_project_id || state.savedProjectId || '';
   state.fileKey = data.file_key;
   state.fileName = data.file_name;
   state.pages = data.pages || [];
@@ -145,7 +196,7 @@ function applyLoadedFile(data, token = '') {
   state.showAllNoisyEdges = false;
   state.openMergedFlows = {};
   state.openJourneys = {};
-  if (data.saved_projects) renderSavedProjects(data.saved_projects);
+  if (data.saved_projects) renderSavedProjects(data.saved_projects, state.savedProjectId);
   $('#fileSummary').hidden = false;
   $('#fileSummary').textContent = `${data.figma_title || data.file_name || '(untitled file)'} | ${data.frame_count} top-level frames | ${data.pages?.length || 0} pages | file key ${data.file_key} | ${data.load_mode || 'full'} | last modified ${data.last_modified || '-'}`;
   renderPageOptions();
@@ -154,6 +205,7 @@ function applyLoadedFile(data, token = '') {
   $('#renderSections').disabled = state.snapshotImported && !state.token;
   $('#renderFrames').disabled = state.snapshotImported && !state.token;
   $('#downloadSnapshot').disabled = false;
+  updateVaultStatus();
 }
 
 async function refreshSavedProjects() {
@@ -232,6 +284,10 @@ async function postDownload(url, payload = {}, timeoutMs = 90000) {
         } catch {
           // Keep raw message.
         }
+      } else if (response.status === 404 && raw.includes('Nothing matches the given URI')) {
+        message = 'Server lokal belum memuat endpoint export PDF terbaru. Stop server Python lama, jalankan ulang `python app.py`, lalu refresh browser dengan Ctrl+F5.';
+      } else if (raw.trim().startsWith('<!DOCTYPE HTML>')) {
+        message = 'Server mengirim halaman error, bukan file download. Coba restart server lokal lalu ulangi action ini.';
       }
       throw new Error(message);
     }
@@ -265,6 +321,7 @@ function setFramesFromPage() {
   const page = selectedPage();
   state.orderedFrames = page ? [...page.frames] : [];
   state.showAllFrames = false;
+  state.checkedFrameIds = new Set(state.orderedFrames.map((frame) => frame.id).filter(Boolean));
   state.pageImageUrls = {};
   state.sectionImageUrls = {};
   state.framePreviewImageUrls = {};
@@ -295,33 +352,53 @@ function renderFrameList() {
     $('#renderFrames').disabled = true;
     return;
   }
-  const visibleFrames = state.showAllFrames ? state.orderedFrames : state.orderedFrames.slice(0, FRAME_PREVIEW_LIMIT);
+  const visibleFrames = state.orderedFrames.slice(0, FRAME_PREVIEW_LIMIT);
+  const sectionCount = state.orderedFrames.filter((frame) => frame.type === 'SECTION').length;
+  const checkedSectionCount = checkedSectionsInOrder().length;
   list.className = 'frame-list';
   list.innerHTML = '';
+  const summary = document.createElement('div');
+  summary.className = 'frame-list-summary';
+  summary.innerHTML = `
+    <div>
+      <strong>10 items preview</strong>
+      <span>${state.orderedFrames.length} total items - ${sectionCount} sections - ${checkedSectionCount} checked sections</span>
+    </div>
+    <button class="btn btn-ghost btn-sm" type="button" data-action="open-full-list">Open Full List</button>`;
+  list.appendChild(summary);
   visibleFrames.forEach((frame) => {
     const actualIndex = state.orderedFrames.indexOf(frame);
-    const row = document.createElement('article');
-    row.className = 'frame-row selected';
-    row.innerHTML = `
-      <div class="frame-main">
-        <input type="checkbox" checked data-id="${frame.id}">
-        <div class="frame-title">
-          <strong>${actualIndex + 1}. ${escapeHtml(frame.name || '(unnamed frame)')}</strong>
-          <small>${frame.type}${frame.section_name ? ` | section: ${escapeHtml(frame.section_name)}` : ''} | ${frame.id} | ${Math.round(frame.width)}x${Math.round(frame.height)} | x ${Math.round(frame.x)}, y ${Math.round(frame.y)}</small>
-        </div>
-      </div>
-      <div class="frame-actions">
-        <button class="mini-btn" type="button" data-action="up" data-index="${actualIndex}">Up</button>
-        <button class="mini-btn" type="button" data-action="down" data-index="${actualIndex}">Down</button>
-      </div>`;
-    list.appendChild(row);
+    list.appendChild(frameRowElement(frame, actualIndex));
   });
   if (state.orderedFrames.length > FRAME_PREVIEW_LIMIT) {
-    list.appendChild(moreButton(state.showAllFrames ? 'Show fewer frames' : `More frames (${state.orderedFrames.length - FRAME_PREVIEW_LIMIT})`, 'toggle-frames'));
+    const note = document.createElement('div');
+    note.className = 'list-note';
+    note.textContent = `${state.orderedFrames.length - FRAME_PREVIEW_LIMIT} item lainnya disimpan di Full List agar halaman utama tetap pendek.`;
+    list.appendChild(note);
   }
   setExportButtons(false);
   $('#renderSections').disabled = state.snapshotImported && !state.token;
   $('#renderFrames').disabled = state.snapshotImported && !state.token;
+  if ($('#exportFutPdfs')) $('#exportFutPdfs').disabled = state.snapshotImported;
+}
+
+function frameRowElement(frame, actualIndex) {
+  const checked = state.checkedFrameIds.has(frame.id);
+  const row = document.createElement('article');
+  row.className = `frame-row${checked ? ' selected' : ''}${frame.type === 'SECTION' ? ' section-row' : ''}`;
+  row.innerHTML = `
+    <div class="frame-main">
+      <input type="checkbox" ${checked ? 'checked' : ''} data-id="${escapeHtml(frame.id)}" aria-label="Select ${escapeHtml(frame.name || frame.id)}">
+      <div class="frame-title">
+        <strong>${actualIndex + 1}. ${escapeHtml(frame.name || '(unnamed frame)')}</strong>
+        <small>${escapeHtml(frame.type)}${frame.section_name ? ` | section: ${escapeHtml(frame.section_name)}` : ''} | ${escapeHtml(frame.id)} | ${Math.round(frame.width)}x${Math.round(frame.height)} | x ${Math.round(frame.x)}, y ${Math.round(frame.y)}</small>
+      </div>
+    </div>
+    <div class="frame-actions">
+      <button class="mini-btn" type="button" data-action="up" data-index="${actualIndex}">Up</button>
+      <button class="mini-btn" type="button" data-action="down" data-index="${actualIndex}">Down</button>
+    </div>`;
+  return row;
 }
 
 function previewGroupElement(title, items, description) {
@@ -368,13 +445,21 @@ function previewGroupElement(title, items, description) {
   return section;
 }
 function selectedFrameIds() {
-  return Array.from(document.querySelectorAll('#frameList input[type="checkbox"]:checked')).map((input) => input.dataset.id).filter(Boolean);
+  return Array.from(state.checkedFrameIds).filter(Boolean);
 }
 
 function selectedFramesInOrder() {
   const ids = new Set(selectedFrameIds());
-  if (!ids.size || !state.showAllFrames) return state.orderedFrames;
+  if (!ids.size) return [];
   return state.orderedFrames.filter((frame) => ids.has(frame.id));
+}
+
+function checkedFramesInOrder() {
+  return selectedFramesInOrder();
+}
+
+function checkedSectionsInOrder() {
+  return selectedFramesInOrder().filter((frame) => frame.type === 'SECTION');
 }
 
 function moveFrame(index, direction) {
@@ -385,6 +470,52 @@ function moveFrame(index, direction) {
   next.splice(target, 0, item);
   state.orderedFrames = next;
   renderFrameList();
+  if (!$('#fullListOverlay')?.hidden) renderFullList();
+}
+
+function renderFullList() {
+  const body = $('#fullListBody');
+  const subtitle = $('#fullListSubtitle');
+  if (!body) return;
+  body.innerHTML = '';
+  const page = selectedPage();
+  const sectionCount = state.orderedFrames.filter((frame) => frame.type === 'SECTION').length;
+  if (subtitle) {
+    subtitle.textContent = `${page?.name || 'Selected page'} - ${state.orderedFrames.length} items - ${sectionCount} sections`;
+  }
+  if (!state.orderedFrames.length) {
+    body.className = 'full-list-body empty';
+    body.textContent = 'Belum ada section atau frame. Load Figma file dulu.';
+    return;
+  }
+  body.className = 'full-list-body';
+  state.orderedFrames.forEach((frame, index) => body.appendChild(frameRowElement(frame, index)));
+}
+
+function openFullList() {
+  renderFullList();
+  const overlay = $('#fullListOverlay');
+  overlay.hidden = false;
+  $('#fullListClose')?.focus();
+}
+
+function closeFullList() {
+  $('#fullListOverlay').hidden = true;
+  renderFrameList();
+}
+
+function frameExportRow(frame, index = 0) {
+  return {
+    order: index + 1,
+    id: frame.id,
+    name: frame.name,
+    type: frame.type,
+    section_name: frame.section_name || '',
+    x: frame.x,
+    y: frame.y,
+    width: frame.width,
+    height: frame.height,
+  };
 }
 
 function renderPrototypeAnalysis(data) {
@@ -456,7 +587,7 @@ function mergedGroupElement(group) {
     <section class="merged-flow-section">
       <div class="merged-flow-title">
         <strong>${escapeHtml(group.name || `Flow ${group.index}`)}: starts at ${escapeHtml(group.root_name || group.root_id)}</strong>
-        <span>${group.path_count || 0} paths merged · ${group.branch_count || 0} branch points</span>
+        <span>${group.path_count || 0} paths merged - ${group.branch_count || 0} branch points</span>
       </div>
       <div class="merged-tree">${treeNodeElement(group.tree, 0)}</div>
     </section>
@@ -593,8 +724,17 @@ $('#loadForm').addEventListener('submit', async (event) => {
 
 $('#savedProjectSelect').addEventListener('change', (event) => {
   const hasValue = Boolean(event.target.value);
+  state.savedProjectId = event.target.value || '';
   $('#loadSavedProject').disabled = !hasValue;
   $('#deleteSavedProject').disabled = !hasValue;
+  const project = selectedSavedProject();
+  const hint = $('#selectedSavedHint');
+  if (hint) {
+    hint.textContent = project
+      ? `${project.title || project.file_name || 'Saved Figma'} is ready to load with its local token.`
+      : 'Choose a saved file to reuse its local token for rendering.';
+  }
+  updateVaultStatus();
 });
 
 $('#loadSavedProject').addEventListener('click', async () => {
@@ -604,6 +744,7 @@ $('#loadSavedProject').addEventListener('click', async () => {
   $('#loadSavedProject').textContent = 'Loading...';
   try {
     const data = await postJson('/api/load-file', {saved_project_id: savedId}, 45000);
+    state.savedProjectId = savedId;
     applyLoadedFile(data, '');
     toast('Saved Figma loaded without re-entering token.');
   } catch (error) {
@@ -619,7 +760,10 @@ $('#deleteSavedProject').addEventListener('click', async () => {
   if (!savedId) return;
   try {
     const data = await postJson('/api/delete-saved-figma', {id: savedId});
+    state.savedProjectId = '';
     renderSavedProjects(data.projects || []);
+    const hint = $('#selectedSavedHint');
+    if (hint) hint.textContent = 'Choose a saved file to reuse its local token for rendering.';
     toast('Saved Figma deleted.');
   } catch (error) {
     showAlert('Delete Saved Failed', error.message || 'Failed to delete saved Figma.', 'error');
@@ -631,13 +775,38 @@ $('#pageSelect').addEventListener('change', (event) => { state.currentPageId = e
 $('#frameList').addEventListener('click', (event) => {
   const button = event.target.closest('button[data-action]');
   if (!button) return;
-  if (button.dataset.action === 'toggle-frames') { state.showAllFrames = !state.showAllFrames; renderFrameList(); return; }
+  if (button.dataset.action === 'open-full-list') { openFullList(); return; }
   moveFrame(Number(button.dataset.index), button.dataset.action === 'up' ? -1 : 1);
 });
 
 $('#frameList').addEventListener('change', (event) => {
   const checkbox = event.target.closest('input[type="checkbox"]');
-  if (checkbox) checkbox.closest('.frame-row')?.classList.toggle('selected', checkbox.checked);
+  if (!checkbox) return;
+  if (checkbox.checked) state.checkedFrameIds.add(checkbox.dataset.id);
+  else state.checkedFrameIds.delete(checkbox.dataset.id);
+  checkbox.closest('.frame-row')?.classList.toggle('selected', checkbox.checked);
+  renderFrameList();
+});
+
+$('#fullListBody')?.addEventListener('click', (event) => {
+  const button = event.target.closest('button[data-action]');
+  if (!button) return;
+  moveFrame(Number(button.dataset.index), button.dataset.action === 'up' ? -1 : 1);
+});
+
+$('#fullListBody')?.addEventListener('change', (event) => {
+  const checkbox = event.target.closest('input[type="checkbox"]');
+  if (!checkbox) return;
+  if (checkbox.checked) state.checkedFrameIds.add(checkbox.dataset.id);
+  else state.checkedFrameIds.delete(checkbox.dataset.id);
+  checkbox.closest('.frame-row')?.classList.toggle('selected', checkbox.checked);
+  renderFullList();
+  renderFrameList();
+});
+
+$('#fullListClose')?.addEventListener('click', closeFullList);
+$('#fullListOverlay')?.addEventListener('click', (event) => {
+  if (event.target.id === 'fullListOverlay') closeFullList();
 });
 
 
@@ -766,6 +935,55 @@ async function downloadFrameOrderExport(exportType, payload, filenamePrefix) {
   }
 }
 
+async function exportFutSectionPdfs() {
+  const page = selectedPage();
+  const sections = checkedSectionsInOrder();
+  const button = $('#exportFutPdfs');
+  if (state.snapshotImported && !state.token) {
+    showAlert(
+      'Export PDF Belum Bisa',
+      'Snapshot hanya berisi struktur file. Untuk membuat PDF visual, load file dari Saved Figma atau masukkan token lagi lewat Load & Save File.',
+      'error'
+    );
+    return;
+  }
+  if (!sections.length) {
+    showAlert('Belum Ada Section Dipilih', 'Centang minimal satu item bertipe SECTION dulu. Export FUT PDF dibuat satu section menjadi satu PDF.', 'error');
+    return;
+  }
+  button.disabled = true;
+  button.textContent = 'Exporting PDFs...';
+  try {
+    const response = await postDownload('/api/export-fut-section-pdfs', {
+      session_id: state.sessionId,
+      token: state.token,
+      file_key: state.fileKey,
+      file_name: state.fileName,
+      page_id: page?.id || '',
+      page_name: page?.name || '',
+      sections: sections.map(frameExportRow),
+    }, 180000);
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `fut-section-pdfs-${slugify(state.fileName || state.fileKey || 'export')}.zip`;
+    link.click();
+    URL.revokeObjectURL(url);
+    toast(`${sections.length} section PDF exported as ZIP.`);
+  } catch (error) {
+    showAlert(
+      'Export PDF Gagal',
+      error.message || 'PDF belum berhasil dibuat.',
+      'error',
+      'Export ini memakai token untuk meminta Figma membuat PDF dari section yang dicentang. Jika file besar, coba pilih section lebih sedikit dulu.'
+    );
+  } finally {
+    button.disabled = !state.sessionId || state.snapshotImported;
+    button.textContent = 'Export Checked Sections as PDF ZIP';
+  }
+}
+
 $('#exportCurrentPage').addEventListener('click', async () => {
   const page = selectedPage();
   const frames = state.orderedFrames.map(frameExportRow);
@@ -820,6 +1038,8 @@ $('#exportAllPages').addEventListener('click', async () => {
     pages,
   }, 'figma-all-pages-frames');
 });
+
+$('#exportFutPdfs')?.addEventListener('click', exportFutSectionPdfs);
 $('#clearToken').addEventListener('click', async () => {
   try {
     await postJson('/api/clear-session', {session_id: state.sessionId});
@@ -846,7 +1066,9 @@ $('#alertOverlay').addEventListener('click', (event) => {
   if (event.target.id === 'alertOverlay') closeAlert();
 });
 document.addEventListener('keydown', (event) => {
-  if (event.key === 'Escape' && !$('#alertOverlay').hidden) closeAlert();
+  if (event.key !== 'Escape') return;
+  if (!$('#alertOverlay').hidden) closeAlert();
+  else if (!$('#fullListOverlay')?.hidden) closeFullList();
 });
 window.addEventListener('error', (event) => {
   showAlert('Browser Script Error', event.message || 'Unexpected browser error.', 'error', `${event.filename || ''}:${event.lineno || 0}`);
