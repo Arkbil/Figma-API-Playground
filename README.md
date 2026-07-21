@@ -23,13 +23,6 @@ Buka di browser:
 http://127.0.0.1:5050
 ```
 
-Default login lokal:
-
-```text
-Username: admin
-Password: a52s12145
-```
-
 Password dapat diganti melalui environment variable `FIGMA_PLAYGROUND_PASSWORD`.
 
 ## Dua Mode Utama
