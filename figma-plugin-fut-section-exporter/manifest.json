@@ -1,0 +1,8 @@
+{
+  "name": "FINTA Exporter",
+  "api": "1.0.0",
+  "main": "code.js",
+  "documentAccess": "dynamic-page",
+  "editorType": ["figma"],
+  "ui": "ui.html"
+}

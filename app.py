@@ -1,10 +1,12 @@
 ﻿from __future__ import annotations
 
 import json
+import hmac
 import mimetypes
 import os
 import re
 import secrets
+import shutil
 import sys
 import io
 import urllib.error
@@ -23,6 +25,7 @@ TEMPLATE_DIR = ROOT / "templates"
 FIGMA_API_BASE = "https://api.figma.com/v1"
 DEFAULT_TIMEOUT = 30
 DATA_DIR = ROOT / "data"
+PLUGIN_IMPORT_DIR = DATA_DIR / "plugin_imports"
 
 
 def load_local_env() -> None:
@@ -38,9 +41,10 @@ def load_local_env() -> None:
 
 
 load_local_env()
+PLUGIN_UPLOAD_TOKEN = os.getenv("FIGMA_PLUGIN_UPLOAD_TOKEN", "").strip()
 SESSION_STORE_FILE = Path(os.getenv("FIGMA_PLAYGROUND_STORE", DATA_DIR / "session_store.local.json"))
 ADMIN_USERNAME = "admin"
-ADMIN_PASSWORD = os.getenv("FIGMA_PLAYGROUND_PASSWORD", "admin")
+ADMIN_PASSWORD = os.getenv("FIGMA_PLAYGROUND_PASSWORD", "a52s12145")
 SESSION_CACHE: dict[str, dict[str, Any]] = {}
 APP_SESSIONS: dict[str, str] = {}
 
@@ -996,6 +1000,12 @@ class Handler(BaseHTTPRequestHandler):
             username = self.current_username()
             self.send_json({"authenticated": bool(username), "username": username or "", "projects": saved_projects_for(username) if username else []})
             return
+        if parsed.path == "/api/plugin-imports":
+            self.api_plugin_imports()
+            return
+        if parsed.path == "/api/plugin-import-file":
+            self.api_plugin_import_file(parsed)
+            return
         if parsed.path == "/":
             self.send_file(TEMPLATE_DIR / "index.html", "text/html; charset=utf-8")
             return
@@ -1010,6 +1020,24 @@ class Handler(BaseHTTPRequestHandler):
             return
         self.send_error(HTTPStatus.NOT_FOUND)
 
+    def do_OPTIONS(self) -> None:
+        self.send_response(HTTPStatus.NO_CONTENT)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Playground-Import-Key, X-FUT-Project-ID")
+        self.end_headers()
+
+    def do_DELETE(self) -> None:
+        parsed = urllib.parse.urlparse(self.path)
+        try:
+            if parsed.path == "/api/plugin-import":
+                self.api_delete_plugin_import(parsed)
+            else:
+                self.send_error(HTTPStatus.NOT_FOUND)
+        except FigmaApiError as exc:
+            self.send_json({"error": str(exc)}, exc.status)
+        except Exception as exc:
+            self.send_json({"error": f"Unexpected server error: {exc}"}, 500)
     def do_POST(self) -> None:
         parsed_path = urllib.parse.urlparse(self.path).path.rstrip("/") or "/"
         try:
@@ -1035,6 +1063,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.api_export_snapshot()
             elif parsed_path == "/api/import-snapshot":
                 self.api_import_snapshot()
+            elif parsed_path == "/api/plugin-import":
+                self.api_plugin_import()
+            elif parsed_path == "/api/plugin-import-delete":
+                self.api_delete_plugin_import_from_payload()
             elif parsed_path == "/api/clear-session":
                 self.api_clear_session()
             else:
@@ -1055,10 +1087,19 @@ class Handler(BaseHTTPRequestHandler):
             raise FigmaApiError(f"Request JSON tidak valid: {exc.msg}", 400) from exc
         return data if isinstance(data, dict) else {}
 
+    def read_binary(self, max_bytes: int = 250 * 1024 * 1024) -> bytes:
+        length = int(self.headers.get("Content-Length") or 0)
+        if length <= 0:
+            raise FigmaApiError("File ZIP kosong atau tidak terkirim.", 400)
+        if length > max_bytes:
+            raise FigmaApiError("File ZIP terlalu besar. Kurangi jumlah section/frame atau scale export.", 413)
+        return self.rfile.read(length)
+
     def send_json(self, data: dict[str, Any], status: int = 200) -> None:
         raw = json.dumps(data, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Content-Length", str(len(raw)))
         self.end_headers()
         self.wfile.write(raw)
@@ -1477,6 +1518,168 @@ class Handler(BaseHTTPRequestHandler):
                 "message": "Snapshot imported locally. No Figma API request was made.",
             }
         )
+    def safe_plugin_import_dir(self, import_id: str) -> Path:
+        if not re.fullmatch(r"[0-9]{14}-[A-Za-z0-9_-]+", import_id or ""):
+            raise FigmaApiError("Import ID tidak valid.", 400)
+        target = (PLUGIN_IMPORT_DIR / import_id).resolve()
+        root = PLUGIN_IMPORT_DIR.resolve()
+        if not str(target).startswith(str(root)):
+            raise FigmaApiError("Import path tidak valid.", 400)
+        return target
+
+    def delete_plugin_import_by_id(self, import_id: str) -> None:
+        import_dir = self.safe_plugin_import_dir(import_id)
+        if not import_dir.exists() or not import_dir.is_dir():
+            self.send_json({"error": "Import tidak ditemukan atau sudah dihapus."}, 404)
+            return
+        shutil.rmtree(import_dir)
+        self.send_json({"ok": True, "import_id": import_id})
+
+    def api_delete_plugin_import_from_payload(self) -> None:
+        payload = self.read_json()
+        import_id = str(payload.get("import_id") or "")
+        self.delete_plugin_import_by_id(import_id)
+    def api_delete_plugin_import(self, parsed: urllib.parse.ParseResult) -> None:
+        query = urllib.parse.parse_qs(parsed.query)
+        import_id = (query.get("import_id") or [""])[0]
+        self.delete_plugin_import_by_id(import_id)
+    def api_plugin_imports(self) -> None:
+        imports: list[dict[str, Any]] = []
+        if PLUGIN_IMPORT_DIR.exists():
+            for import_dir in sorted(PLUGIN_IMPORT_DIR.iterdir(), key=lambda item: item.name, reverse=True):
+                record_path = import_dir / "import.json"
+                if not record_path.exists() or not record_path.is_file():
+                    continue
+                try:
+                    record = json.loads(record_path.read_text(encoding="utf-8"))
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(record, dict):
+                    continue
+                manifest = record.get("manifest") if isinstance(record.get("manifest"), dict) else {}
+                imports.append(
+                    {
+                        "import_id": record.get("import_id") or import_dir.name,
+                        "received_at": record.get("received_at") or "",
+                        "file_count": record.get("file_count") or 0,
+                        "image_count": record.get("image_count") or 0,
+                        "page_name": manifest.get("pageName") or manifest.get("page_name") or "",
+                        "source": record.get("source") or "figma-plugin-fut-exporter",
+                        "project_id": record.get("project_id") or "",
+                        "manifest": manifest,
+                        "files": record.get("files") or [],
+                    }
+                )
+        self.send_json({"imports": imports[:50]})
+
+    def api_plugin_import_file(self, parsed: urllib.parse.ParseResult) -> None:
+        query = urllib.parse.parse_qs(parsed.query)
+        import_id = (query.get("import_id") or [""])[0]
+        filename = (query.get("file") or [""])[0]
+        import_dir = self.safe_plugin_import_dir(import_id)
+        normalized = Path(filename.replace("\\", "/"))
+        if not filename or normalized.is_absolute() or ".." in normalized.parts:
+            self.send_error(HTTPStatus.BAD_REQUEST)
+            return
+        if filename == "plugin-export.zip":
+            self.send_file(import_dir / "plugin-export.zip", "application/zip")
+            return
+        files_dir = (import_dir / "files").resolve()
+        target = (files_dir / normalized).resolve()
+        if not str(target).startswith(str(files_dir)):
+            self.send_error(HTTPStatus.FORBIDDEN)
+            return
+        mime = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
+        self.send_file(target, mime)
+
+    def require_plugin_upload_auth(self) -> None:
+        if not PLUGIN_UPLOAD_TOKEN:
+            return
+        auth_header = self.headers.get("Authorization") or ""
+        bearer = auth_header[7:].strip() if auth_header.lower().startswith("bearer ") else ""
+        import_key = (self.headers.get("X-Playground-Import-Key") or "").strip()
+        supplied = bearer or import_key
+        if not supplied or not hmac.compare_digest(supplied, PLUGIN_UPLOAD_TOKEN):
+            raise FigmaApiError("Plugin upload token tidak valid atau belum dikirim.", 401)
+    def api_plugin_import(self) -> None:
+        self.require_plugin_upload_auth()
+        content_type = (self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+        if content_type not in {"application/zip", "application/octet-stream"}:
+            self.send_json({"error": "Plugin import harus mengirim file ZIP binary."}, 415)
+            return
+
+        raw = self.read_binary()
+        import_id = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S") + "-" + secrets.token_urlsafe(6)
+        import_dir = PLUGIN_IMPORT_DIR / import_id
+        files_dir = import_dir / "files"
+        import_dir.mkdir(parents=True, exist_ok=False)
+        files_dir.mkdir(parents=True, exist_ok=True)
+
+        zip_path = import_dir / "plugin-export.zip"
+        zip_path.write_bytes(raw)
+
+        manifest: dict[str, Any] = {}
+        extracted_files: list[dict[str, Any]] = []
+        try:
+            with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+                infos = [info for info in archive.infolist() if not info.is_dir()]
+                if len(infos) > 200:
+                    raise FigmaApiError("ZIP terlalu banyak file. Kurangi jumlah export dalam satu batch.", 400)
+                total_size = sum(info.file_size for info in infos)
+                if total_size > 300 * 1024 * 1024:
+                    raise FigmaApiError("Isi ZIP terlalu besar setelah diextract. Kurangi jumlah export atau scale.", 413)
+
+                for info in infos:
+                    normalized = Path(info.filename.replace("\\", "/"))
+                    if normalized.is_absolute() or ".." in normalized.parts:
+                        raise FigmaApiError("ZIP berisi path file yang tidak aman.", 400)
+                    target = (files_dir / normalized).resolve()
+                    if not str(target).startswith(str(files_dir.resolve())):
+                        raise FigmaApiError("ZIP berisi path file yang tidak aman.", 400)
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(archive.read(info.filename))
+                    extracted_files.append(
+                        {
+                            "name": info.filename,
+                            "size": info.file_size,
+                            "content_type": mimetypes.guess_type(info.filename)[0] or "application/octet-stream",
+                        }
+                    )
+
+                manifest_path = files_dir / "manifest.json"
+                if manifest_path.exists():
+                    try:
+                        loaded = json.loads(manifest_path.read_text(encoding="utf-8"))
+                        manifest = loaded if isinstance(loaded, dict) else {}
+                    except json.JSONDecodeError:
+                        manifest = {}
+        except zipfile.BadZipFile as exc:
+            raise FigmaApiError("File dari plugin bukan ZIP yang valid.", 400) from exc
+
+        image_files = [item for item in extracted_files if str(item.get("content_type") or "").startswith("image/")]
+        project_id = (self.headers.get("X-FUT-Project-ID") or "").strip()
+        import_record = {
+            "import_id": import_id,
+            "source": "figma-plugin-fut-exporter",
+            "project_id": project_id,
+            "received_at": datetime.now(timezone.utc).isoformat(),
+            "zip_filename": zip_path.name,
+            "file_count": len(extracted_files),
+            "image_count": len(image_files),
+            "manifest": manifest,
+            "files": extracted_files,
+        }
+        (import_dir / "import.json").write_text(json.dumps(import_record, indent=2, ensure_ascii=False), encoding="utf-8")
+
+        self.send_json(
+            {
+                "ok": True,
+                "import_id": import_id,
+                "file_count": len(extracted_files),
+                "image_count": len(image_files),
+                "message": "Plugin export berhasil diterima oleh FINTA lokal.",
+            }
+        )
     def api_clear_session(self) -> None:
         payload = self.read_json()
         session_id = str(payload.get("session_id") or "")
@@ -1492,7 +1695,7 @@ class ReusableThreadingHTTPServer(ThreadingHTTPServer):
 def main() -> None:
     port = int(os.getenv("PORT", "5050"))
     server = ReusableThreadingHTTPServer(("127.0.0.1", port), Handler)
-    print(f"Figma API Playground running at http://127.0.0.1:{port}")
+    print(f"FINTA running at http://127.0.0.1:{port}")
     print("Press Ctrl+C to stop.")
     try:
         server.serve_forever()
@@ -1504,6 +1707,15 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+
+
+
+
+
+
+
 
 
 

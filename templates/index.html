@@ -3,15 +3,15 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Figma API Playground</title>
+  <title>FINTA</title>
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
   <section id="loginView" class="login-shell">
     <form id="loginForm" class="login-card">
       <span class="eyebrow">LOCAL SESSION</span>
-      <h1>Figma API Playground</h1>
-      <p>Login first to reuse saved Figma tokens and file keys in this local playground.</p>
+      <h1>FINTA</h1>
+      <p>Login first to reuse saved Figma tokens and file keys in this local FINTA.</p>
       <label>ID
         <input name="username" autocomplete="username" placeholder="admin" required>
       </label>
@@ -26,7 +26,7 @@
     <header class="topbar">
       <div>
         <span class="eyebrow">LOCAL TEST TOOL</span>
-        <h1>Figma API Playground</h1>
+        <h1>FINTA</h1>
         <p>Load a Figma file once, keep its token in a local-only vault, then reuse Saved Figma for future section and frame renders.</p>
       </div>
       <div class="top-actions">
@@ -40,11 +40,31 @@
       <div class="panel-head">
         <div>
           <span class="step">Phase 1</span>
-          <h2>Load Figma File</h2>
+          <h2>Choose Load Source</h2>
         </div>
-        <small>Saved Figma entries stay on this laptop. Snapshots do not include tokens.</small>
+        <small>Choose API mode for live Figma REST access, or Plugin mode for local ZIP/PNG imports without Personal Access Token.</small>
       </div>
-      <div class="vault-strip" aria-live="polite">
+      <div class="source-mode-toggle" id="sourceModeToggle" role="tablist" aria-label="Load source options">
+        <button id="sourceModePlugin" class="source-mode-card" type="button" data-source-mode="plugin" role="tab" aria-selected="false">
+          <span>Option 1</span>
+          <strong>Figma Plugin</strong>
+          <small>Export visual dari Figma client sebagai ZIP/PNG lokal. Tanpa Personal Access Token.</small>
+        </button>
+        <button id="sourceModeApi" class="source-mode-card active" type="button" data-source-mode="api" role="tab" aria-selected="true">
+          <span>Option 2</span>
+          <strong>Figma File / API</strong>
+          <small>Load via token + file key. Bisa baca struktur dan render, tapi memakai limit Figma API.</small>
+        </button>
+      </div>
+      <div id="figmaFileSourcePanel" class="source-mode-content" data-source-panel="api">
+        <div class="source-setup-card">
+          <span>Setup Figma File / API</span>
+          <ol>
+            <li>Buat atau paste Personal Access Token Figma yang punya akses ke file.</li>
+            <li>Paste sRL/file key Figma, lalu isi Judul Figma.</li>
+            <li>Klik Load & Save File untuk menyimpan credential lokal dan mengaktifkan render/export API.</li>
+          </ol>
+        </div>      <div class="vault-strip" aria-live="polite">
         <div>
           <span id="savedCount">0 saved</span>
           <strong>Local token vault</strong>
@@ -80,7 +100,7 @@
         <label class="span-2">Figma Personal Access Token
           <input name="token" type="password" autocomplete="off" placeholder="Paste Figma token" required>
         </label>
-        <label class="span-2">Figma File URL or File Key
+        <label class="span-2">Figma File sRL or File Key
           <input name="figma_url" placeholder="https://www.figma.com/design/FILE_KEY/File-Name" required>
         </label>
         <button class="btn btn-primary span-2" type="submit">Load & Save File</button>
@@ -91,14 +111,35 @@
         <input id="snapshotFile" type="file" accept="application/json,.json" hidden>
       </div>
       <div id="fileSummary" class="summary" hidden></div>
+      </div>
     </section>
 
-    <section class="panel phase-panel">
+
+    <section id="pluginSourcePanel" class="panel plugin-import-panel source-mode-content" data-source-panel="plugin" hidden>
+      <div class="source-setup-card plugin-setup-card">
+        <span>Setup Figma Plugin</span>
+        <ol>
+          <li>Jalankan server lokal FINTA di port 5050.</li>
+          <li>Buka file Figma, run plugin FINTA Exporter.</li>
+          <li>Pilih section/frame, klik Send to FINTA, lalu kembali ke halaman FINTA dan klik Refresh Imports.</li>
+        </ol>
+      </div>
+      <div class="plugin-import-hero">
+        <div>
+          <span class="step">Plugin Import</span>
+          <h2>Received from Figma Plugin</h2>
+          <p class="panel-copy">Hasil Send to FINTA muncul otomatis sebagai ZIP PNG lokal tanpa Personal Access Token. Setiap import baru akan ditambahkan ke daftar, bukan menimpa import sebelumnya.</p>
+        </div>
+        <button id="refreshPluginImports" class="btn btn-secondary" type="button">Refresh Imports</button>
+      </div>
+      <div id="pluginImportList" class="plugin-import-list empty">Belum ada import dari plugin. Jalankan plugin di Figma, pilih section/frame, lalu klik Send to FINTA.</div>
+      <div id="pluginImportPreview" class="plugin-import-preview" hidden></div>
+    </section>    <section class="panel phase-panel">
       <div class="panel-head">
         <div>
           <span class="step">Phase 2</span>
           <h2>Choose Page & Sections</h2>
-          <p class="panel-copy">Main list shows 10 preview items only. Use Full List to review, reorder, and select every section without stretching the page.</p>
+          <p class="panel-copy">Main list shows 10 preview items only. sse Full List to review, reorder, and select every section without stretching the page.</p>
         </div>
       </div>
       <label>Page
@@ -147,7 +188,7 @@
       </div>
       <div class="fut-notes">
         <article>
-          <strong>Uses token only when exporting</strong>
+          <strong>sses token only when exporting</strong>
           <span>The selected sections are rendered lazily by Figma API. Preview render is not required.</span>
         </article>
         <article>
@@ -163,15 +204,15 @@
 
     <section class="guide-panel" aria-labelledby="localDocsTitle">
       <div>
-        <span class="eyebrow">LOCAL DOCUMENTATION</span>
+        <span class="eyebrow">LOCAL DOCsMENTATION</span>
         <h2 id="localDocsTitle">How This Fits FUT Automation</h2>
-        <p>Use this playground to replace the manual Figma block-section-download-PDF step. Load metadata, choose sections, then export split PDFs for FUT Automation.</p>
+        <p>Use FINTA to replace the manual Figma block-section-download-PDF step. Load metadata, choose sections, then export split PDFs for FUT Automation.</p>
       </div>
       <div class="guide-grid">
         <article>
           <span>01</span>
           <h3>First load on a laptop</h3>
-          <p>Enter title, Figma token, and file URL. A successful load writes the saved entry to <code>data/session_store.local.json</code>.</p>
+          <p>Enter title, Figma token, and file sRL. A successful load writes the saved entry to <code>data/session_store.local.json</code>.</p>
         </article>
         <article>
           <span>02</span>
@@ -215,8 +256,32 @@
       <button id="alertClose" class="btn btn-primary" type="button">OK</button>
     </section>
   </div>
-  <script src="/static/app.js"></script>
+  <div id="confirmOverlay" class="confirm-overlay" hidden>
+    <section class="confirm-box" role="alertdialog" aria-modal="true" aria-labelledby="confirmTitle">
+      <div id="confirmIcon" class="confirm-icon">!</div>
+      <h2 id="confirmTitle">Confirm Action</h2>
+      <p id="confirmMessage"></p>
+      <pre id="confirmDetail" class="alert-detail" hidden></pre>
+      <div class="confirm-actions">
+        <button id="confirmCancel" class="btn btn-ghost" type="button">Cancel</button>
+        <button id="confirmOk" class="btn btn-danger" type="button">Remove</button>
+      </div>
+    </section>
+  </div>  <script src="/static/app.js"></script>
 </body>
 </html>
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 

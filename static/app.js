@@ -23,13 +23,59 @@ const state = {
   username: '',
   snapshotImported: false,
   checkedFrameIds: new Set(),
+  pluginImports: [],
+  pluginImportOrder: [],
+  pluginImportDragId: '',
+  sourceMode: localStorage.getItem('figma-playground-source-mode') || 'api',
+  pluginImportHiddenFiles: {},
+
 };
 
 const $ = (selector) => document.querySelector(selector);
 const FRAME_PREVIEW_LIMIT = 10;
 const CLEAN_EDGE_LIMIT = 8;
 const NOISY_EDGE_LIMIT = 20;
+const PLUGIN_IMPORT_ORDER_KEY = 'figma-playground-plugin-import-order';
+const PLUGIN_IMPORT_HIDDEN_KEY = 'figma-playground-plugin-import-hidden-files';
 
+function setSourceMode(mode) {
+  state.sourceMode = mode === 'plugin' ? 'plugin' : 'api';
+  localStorage.setItem('figma-playground-source-mode', state.sourceMode);
+  document.querySelectorAll('[data-source-mode]').forEach((button) => {
+    const active = button.dataset.sourceMode === state.sourceMode;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-selected', active ? 'true' : 'false');
+  });
+  const apiPanel = $('#figmaFileSourcePanel');
+  const pluginPanel = $('#pluginSourcePanel');
+  if (apiPanel) apiPanel.hidden = state.sourceMode !== 'api';
+  if (pluginPanel) pluginPanel.hidden = state.sourceMode !== 'plugin';
+  document.querySelectorAll('.phase-panel').forEach((panel) => {
+    panel.hidden = state.sourceMode === 'plugin';
+  });
+  updateSourceModeStatus();
+}
+
+function updateSourceModeStatus() {
+  const modeStatus = $('#apiModeStatus');
+  if (!modeStatus) return;
+  if (state.sourceMode === 'plugin') {
+    const count = state.pluginImports.length;
+    modeStatus.textContent = count
+      ? `Plugin mode active. ${count} local import(s) ready for FUT visual flow.`
+      : 'Plugin mode active. Send ZIP/PNG from Figma plugin, then refresh imports.';
+    return;
+  }
+  if (state.snapshotImported && !state.token) {
+    modeStatus.textContent = 'Snapshot JSON loaded. Tree data is available, but render/export still needs token.';
+    return;
+  }
+  if (state.sessionId && state.token) {
+    modeStatus.textContent = 'API mode active. Render, PDF export, and snapshot download can run with the active token.';
+    return;
+  }
+  modeStatus.textContent = 'API mode active. Load a Figma file to enable API-backed render and PDF export.';
+}
 function toast(message, error = false) {
   if (error) {
     showAlert('Request Failed', message || 'Something went wrong.', 'error');
@@ -62,6 +108,51 @@ function showAlert(title, message, type = 'error', detail = '') {
   $('#alertClose').focus();
 }
 
+function showConfirm(options = {}) {
+  const overlay = $('#confirmOverlay');
+  if (!overlay) return Promise.resolve(false);
+  const title = options.title || 'Confirm Action';
+  const message = options.message || 'Are you sure?';
+  const detail = options.detail || '';
+  const confirmText = options.confirmText || 'OK';
+  const cancelText = options.cancelText || 'Cancel';
+  $('#confirmTitle').textContent = title;
+  $('#confirmMessage').textContent = message;
+  $('#confirmOk').textContent = confirmText;
+  $('#confirmCancel').textContent = cancelText;
+  const detailEl = $('#confirmDetail');
+  if (detail) {
+    detailEl.textContent = detail;
+    detailEl.hidden = false;
+  } else {
+    detailEl.textContent = '';
+    detailEl.hidden = true;
+  }
+  overlay.hidden = false;
+  $('#confirmCancel').focus();
+  return new Promise((resolve) => {
+    const cleanup = (value) => {
+      overlay.hidden = true;
+      $('#confirmOk').removeEventListener('click', onOk);
+      $('#confirmCancel').removeEventListener('click', onCancel);
+      overlay.removeEventListener('click', onOverlay);
+      document.removeEventListener('keydown', onKey);
+      resolve(value);
+    };
+    const onOk = () => cleanup(true);
+    const onCancel = () => cleanup(false);
+    const onOverlay = (event) => {
+      if (event.target === overlay) cleanup(false);
+    };
+    const onKey = (event) => {
+      if (event.key === 'Escape') cleanup(false);
+    };
+    $('#confirmOk').addEventListener('click', onOk);
+    $('#confirmCancel').addEventListener('click', onCancel);
+    overlay.addEventListener('click', onOverlay);
+    document.addEventListener('keydown', onKey);
+  });
+}
 function closeAlert() {
   $('#alertOverlay').hidden = true;
 }
@@ -73,7 +164,8 @@ function showLogin() {
 
 function showApp(username) {
   state.username = username || 'admin';
-  $('#activeUser').textContent = state.username;
+  const activeUser = $('#activeUser');
+  if (activeUser) activeUser.textContent = state.username;
   $('#loginView').hidden = true;
   $('#appView').hidden = false;
 }
@@ -213,13 +305,227 @@ async function refreshSavedProjects() {
   renderSavedProjects(data.projects || []);
 }
 
-async function checkAuth() {
+
+function loadPluginImportOrder() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(PLUGIN_IMPORT_ORDER_KEY) || '[]');
+    return Array.isArray(parsed) ? parsed.filter(Boolean).map(String) : [];
+  } catch {
+    return [];
+  }
+}
+
+function savePluginImportOrder() {
+  const ids = state.pluginImports.map((item) => String(item.import_id || '')).filter(Boolean);
+  state.pluginImportOrder = ids;
+  localStorage.setItem(PLUGIN_IMPORT_ORDER_KEY, JSON.stringify(ids));
+}
+
+function applyPluginImportOrder(imports) {
+  const savedOrder = loadPluginImportOrder();
+  const byId = new Map(imports.map((item) => [String(item.import_id || ''), item]));
+  const ordered = [];
+  savedOrder.forEach((id) => {
+    if (byId.has(id)) {
+      ordered.push(byId.get(id));
+      byId.delete(id);
+    }
+  });
+  byId.forEach((item) => ordered.push(item));
+  state.pluginImportOrder = ordered.map((item) => String(item.import_id || '')).filter(Boolean);
+  return ordered;
+}
+
+function movePluginImport(importId, direction) {
+  const index = state.pluginImports.findIndex((item) => String(item.import_id || '') === importId);
+  if (index < 0) return;
+  const nextIndex = index + direction;
+  if (nextIndex < 0 || nextIndex >= state.pluginImports.length) return;
+  const items = [...state.pluginImports];
+  const [item] = items.splice(index, 1);
+  items.splice(nextIndex, 0, item);
+  state.pluginImports = items;
+  savePluginImportOrder();
+  renderPluginImports();
+}
+
+function movePluginImportBefore(dragId, targetId) {
+  if (!dragId || !targetId || dragId === targetId) return;
+  const items = [...state.pluginImports];
+  const fromIndex = items.findIndex((item) => String(item.import_id || '') === dragId);
+  const toIndex = items.findIndex((item) => String(item.import_id || '') === targetId);
+  if (fromIndex < 0 || toIndex < 0) return;
+  const [item] = items.splice(fromIndex, 1);
+  const adjustedIndex = fromIndex < toIndex ? toIndex - 1 : toIndex;
+  items.splice(adjustedIndex, 0, item);
+  state.pluginImports = items;
+  savePluginImportOrder();
+  renderPluginImports();
+}
+
+async function deletePluginImport(importId) {
+  if (!importId) return;
+  const item = state.pluginImports.find((entry) => String(entry.import_id || '') === importId);
+  const title = item?.page_name || item?.manifest?.pageName || importId;
+  const confirmed = await showConfirm({
+    title: 'Hapus Import?',
+    message: `Import "${title}" akan dihapus dari storage lokal FINTA. File ZIP dan PNG hasil plugin ikut terhapus.`,
+    detail: importId,
+    confirmText: 'Hapus',
+    cancelText: 'Batal',
+  });
+  if (!confirmed) return;
+  try {
+    await postJson('/api/plugin-import-delete', {import_id: importId}, 30000);
+    state.pluginImports = state.pluginImports.filter((entry) => String(entry.import_id || '') !== importId);
+    savePluginImportOrder();
+    renderPluginImports();
+    toast('Plugin import removed.');
+  } catch (error) {
+    const message = error.message || 'Gagal menghapus plugin import.';
+    const hint = /HTTP 404|HTTP 501|not found/i.test(message)
+      ? 'Server Python perlu direstart agar endpoint hapus import aktif.'
+      : message;
+    toast(hint, true);
+  }
+}
+
+async function refreshPluginImports(showToast = false) {
+  const list = $('#pluginImportList');
+  if (!list) return;
+  list.className = 'plugin-import-list empty';
+  list.textContent = 'Loading plugin imports...';
+  try {
+    const response = await fetch('/api/plugin-imports');
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+    state.pluginImports = applyPluginImportOrder(data.imports || []);
+    savePluginImportOrder();
+    renderPluginImports();
+    if (showToast) toast(`Loaded ${state.pluginImports.length} plugin import(s).`);
+  } catch (error) {
+    list.className = 'plugin-import-list empty';
+    list.textContent = 'Belum bisa membaca plugin imports. Pastikan server Python sudah direstart.';
+    if (showToast) toast(error.message || 'Failed to refresh plugin imports.', true);
+  }
+}
+
+function loadPluginImportHiddenFiles() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(PLUGIN_IMPORT_HIDDEN_KEY) || '{}');
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function savePluginImportHiddenFiles() {
+  localStorage.setItem(PLUGIN_IMPORT_HIDDEN_KEY, JSON.stringify(state.pluginImportHiddenFiles || {}));
+}
+
+function hiddenFilesForImport(importId) {
+  const hidden = state.pluginImportHiddenFiles?.[importId];
+  return new Set(Array.isArray(hidden) ? hidden : []);
+}
+
+function hidePluginImportFile(importId, filename) {
+  if (!importId || !filename) return;
+  const hidden = hiddenFilesForImport(importId);
+  hidden.add(filename);
+  state.pluginImportHiddenFiles = {...state.pluginImportHiddenFiles, [importId]: [...hidden]};
+  savePluginImportHiddenFiles();
+  renderPluginImports();
+}
+
+function restorePluginImportFiles(importId) {
+  if (!importId) return;
+  const next = {...state.pluginImportHiddenFiles};
+  delete next[importId];
+  state.pluginImportHiddenFiles = next;
+  savePluginImportHiddenFiles();
+  renderPluginImports();
+}
+
+function renderPluginImports() {
+  const list = $('#pluginImportList');
+  const preview = $('#pluginImportPreview');
+  if (!list) return;
+  if (preview) preview.hidden = true;
+  state.pluginImportHiddenFiles = loadPluginImportHiddenFiles();
+  list.innerHTML = '';
+  if (!state.pluginImports.length) {
+    list.className = 'plugin-import-list empty';
+    list.textContent = 'Belum ada import dari plugin. Jalankan plugin di Figma, pilih section/frame, lalu klik Send to FINTA.';
+    return;
+  }
+  list.className = 'plugin-import-history';
+  state.pluginImports.forEach((item, index) => list.appendChild(pluginImportHistoryCard(item, index)));
+}
+
+function pluginImportFileUrl(importId, filename) {
+  return `/api/plugin-import-file?import_id=${encodeURIComponent(importId)}&file=${encodeURIComponent(filename)}`;
+}
+
+function pluginImportHistoryCard(item, index) {
+  const article = document.createElement('article');
+  article.className = 'plugin-import-history-card';
+  article.dataset.importId = item.import_id;
+  article.draggable = true;
+  const manifest = item.manifest || {};
+  const pageName = item.page_name || manifest.pageName || 'Unknown page';
+  const imageFiles = (item.files || []).filter((file) => String(file.content_type || '').startsWith('image/'));
+  const hiddenFiles = hiddenFilesForImport(String(item.import_id || ''));
+  const visibleImageFiles = imageFiles.filter((file) => !hiddenFiles.has(String(file.name || '')));
+  const hiddenCount = imageFiles.length - visibleImageFiles.length;
+  article.innerHTML = `
+    <header class="plugin-import-preview-head">
+      <button class="plugin-import-drag-handle" type="button" aria-label="Drag to reorder" title="Drag untuk urutkan">::</button>
+      <div class="plugin-import-title">
+        <strong>${index + 1}. ${escapeHtml(pageName)}</strong>
+        <span>${escapeHtml(item.import_id)} | ${visibleImageFiles.length} visible / ${imageFiles.length} image(s) | ${escapeHtml(item.received_at || '-')}</span>
+      </div>
+      <div class="plugin-import-actions">
+        <button class="btn btn-ghost plugin-import-up" type="button" ${index === 0 ? 'disabled' : ''}>Up</button>
+        <button class="btn btn-ghost plugin-import-down" type="button" ${index === state.pluginImports.length - 1 ? 'disabled' : ''}>Down</button>
+        ${hiddenCount ? '<button class="btn btn-ghost plugin-import-restore" type="button">Restore Hidden</button>' : ''}
+        <button class="btn btn-danger plugin-import-remove" type="button">Remove</button>
+        <a class="btn btn-ghost" href="/api/plugin-import-file?import_id=${encodeURIComponent(item.import_id)}&file=plugin-export.zip" target="_blank" rel="noopener">Open ZIP</a>
+      </div>
+    </header>`;
+  const grid = document.createElement('div');
+  grid.className = 'plugin-import-grid';
+  visibleImageFiles.forEach((file, fileIndex) => {
+    const shot = document.createElement('div');
+    shot.className = 'plugin-import-shot plugin-import-shot-editable';
+    shot.dataset.filename = file.name;
+    shot.innerHTML = `
+      <button class="plugin-import-shot-remove" type="button" title="Sembunyikan item ini dari daftar aktif">Hide</button>
+      <a href="${pluginImportFileUrl(item.import_id, file.name)}" target="_blank" rel="noopener">
+        <img src="${pluginImportFileUrl(item.import_id, file.name)}" alt="${escapeHtml(file.name)}">
+        <strong>${fileIndex + 1}. ${escapeHtml(file.name)}</strong>
+        <span>${Math.round((Number(file.size) || 0) / 1024)} KB</span>
+      </a>`;
+    grid.appendChild(shot);
+  });
+  if (!visibleImageFiles.length) {
+    grid.innerHTML = '<div class="empty">Semua image di import ini sedang disembunyikan. Klik Restore Hidden untuk mengembalikan.</div>';
+  }
+  article.appendChild(grid);
+  return article;
+}
+function renderPluginImportPreview(importId) {
+  const item = state.pluginImports.find((entry) => entry.import_id === importId);
+  if (!item) return;
+  const target = document.querySelector(`[data-import-id="${CSS.escape(importId)}"]`);
+  if (target) target.scrollIntoView({behavior: 'smooth', block: 'start'});
+}async function checkAuth() {
   try {
     const response = await fetch('/api/me');
     const data = await response.json();
     if (data.authenticated) {
       showApp(data.username);
       renderSavedProjects(data.projects || []);
+      setSourceMode(state.sourceMode);
     } else {
       showLogin();
     }
@@ -521,6 +827,7 @@ function frameExportRow(frame, index = 0) {
 function renderPrototypeAnalysis(data) {
   state.flowAnalysis = data;
   const result = $('#prototypeResult');
+  if (!result) return;
   const flowEdges = data.flow_edges || [];
   const noisyEdges = data.noisy_edges || [];
   const stats = data.stats || {};
@@ -915,7 +1222,7 @@ $('#snapshotFile').addEventListener('change', async (event) => {
       'Import Snapshot Failed',
       error.message || 'Snapshot JSON tidak bisa dibaca.',
       'error',
-      'Pastikan file yang diupload adalah JSON hasil Download Snapshot dari Figma API Playground.'
+      'Pastikan file yang diupload adalah JSON hasil Download Snapshot dari FINTA.'
     );
   }
 });
@@ -1039,7 +1346,71 @@ $('#exportAllPages').addEventListener('click', async () => {
   }, 'figma-all-pages-frames');
 });
 
+$('#sourceModeApi')?.addEventListener('click', () => setSourceMode('api'));
+$('#sourceModePlugin')?.addEventListener('click', () => setSourceMode('plugin'));
 $('#exportFutPdfs')?.addEventListener('click', exportFutSectionPdfs);
+$('#refreshPluginImports')?.addEventListener('click', () => refreshPluginImports(true));
+$('#pluginImportList')?.addEventListener('click', (event) => {
+  const card = event.target.closest('.plugin-import-history-card');
+  if (!card) return;
+  const importId = card.dataset.importId || '';
+  const shotRemove = event.target.closest('.plugin-import-shot-remove');
+  if (shotRemove) {
+    const shot = shotRemove.closest('.plugin-import-shot');
+    hidePluginImportFile(importId, shot?.dataset.filename || '');
+    return;
+  }
+  if (event.target.closest('.plugin-import-restore')) {
+    restorePluginImportFiles(importId);
+    return;
+  }
+  if (event.target.closest('.plugin-import-remove')) {
+    deletePluginImport(importId);
+    return;
+  }
+  if (event.target.closest('.plugin-import-up')) {
+    movePluginImport(importId, -1);
+    return;
+  }
+  if (event.target.closest('.plugin-import-down')) {
+    movePluginImport(importId, 1);
+    return;
+  }
+  if (event.target.closest('a, button')) return;
+  renderPluginImportPreview(importId);
+});
+$('#pluginImportList')?.addEventListener('dragstart', (event) => {
+  const card = event.target.closest('.plugin-import-history-card');
+  if (!card) return;
+  state.pluginImportDragId = card.dataset.importId || '';
+  card.classList.add('dragging');
+  event.dataTransfer.effectAllowed = 'move';
+  event.dataTransfer.setData('text/plain', state.pluginImportDragId);
+});
+$('#pluginImportList')?.addEventListener('dragover', (event) => {
+  const card = event.target.closest('.plugin-import-history-card');
+  if (!card || !state.pluginImportDragId || card.dataset.importId === state.pluginImportDragId) return;
+  event.preventDefault();
+  card.classList.add('drag-over');
+});
+$('#pluginImportList')?.addEventListener('dragleave', (event) => {
+  const card = event.target.closest('.plugin-import-history-card');
+  if (card) card.classList.remove('drag-over');
+});
+$('#pluginImportList')?.addEventListener('drop', (event) => {
+  const card = event.target.closest('.plugin-import-history-card');
+  if (!card || !state.pluginImportDragId) return;
+  event.preventDefault();
+  card.classList.remove('drag-over');
+  movePluginImportBefore(state.pluginImportDragId, card.dataset.importId || '');
+});
+$('#pluginImportList')?.addEventListener('dragend', () => {
+  document.querySelectorAll('.plugin-import-history-card.dragging, .plugin-import-history-card.drag-over').forEach((el) => {
+    el.classList.remove('dragging', 'drag-over');
+  });
+  state.pluginImportDragId = '';
+});
+
 $('#clearToken').addEventListener('click', async () => {
   try {
     await postJson('/api/clear-session', {session_id: state.sessionId});
@@ -1080,4 +1451,36 @@ window.addEventListener('unhandledrejection', (event) => {
 
 resetRenderPreviews();
 checkAuth();
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 

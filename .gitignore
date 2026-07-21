@@ -26,3 +26,11 @@ figma-snapshot-*.json
 *.sqlite
 *.sqlite3
 *.db
+# FINTA local runtime/import outputs
+server.local*.log
+plugin_imports/
+**/plugin_imports/
+*plugin-export*.zip
+*finta-export*.zip
+finta-snapshot-*.json
+finta-export-*.json

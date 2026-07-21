@@ -1,0 +1,353 @@
+﻿<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    :root { color-scheme: light dark; }
+    body { margin: 0; font-family: Inter, Arial, sans-serif; background: var(--figma-color-bg); color: var(--figma-color-text); }
+    .shell { padding: 16px; display: grid; gap: 12px; }
+    h1 { margin: 0; font-size: 18px; letter-spacing: -.2px; }
+    p { margin: 0; color: var(--figma-color-text-secondary); line-height: 1.45; font-size: 12px; }
+    .meta { border: 1px solid var(--figma-color-border); border-radius: 8px; padding: 10px; background: var(--figma-color-bg-secondary); }
+    .toolbar { display: grid; gap: 8px; }
+    .quick { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+    .page-picker { display: grid; gap: 8px; }
+    .page-grid { max-height: 150px; overflow: auto; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; padding: 8px; border: 1px solid var(--figma-color-border); border-radius: 8px; background: var(--figma-color-bg-secondary); }
+    .page-option { min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 7px; align-items: center; min-height: 40px; padding: 8px; border: 1px solid var(--figma-color-border); border-radius: 7px; background: var(--figma-color-bg); font-size: 11px; font-weight: 700; overflow-wrap: anywhere; }
+    .page-option input { margin: 0; }
+    .page-toolbar { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+    .page-toolbar span { font-size: 12px; font-weight: 800; }
+    .page-toolbar button { min-height: 32px; padding: 0 14px; }
+    @media (max-width: 520px) { .page-grid { grid-template-columns: 1fr; } }
+
+    label { display: grid; gap: 6px; font-size: 12px; font-weight: 700; }
+    input, select, button { min-height: 34px; border-radius: 6px; border: 1px solid var(--figma-color-border); background: var(--figma-color-bg); color: var(--figma-color-text); font: inherit; box-sizing: border-box; }
+    input { padding: 0 10px; width: 100%; }
+    button { cursor: pointer; font-weight: 700; }
+    button.primary { background: var(--figma-color-bg-brand); color: var(--figma-color-text-onbrand); border-color: var(--figma-color-bg-brand); }
+    button:disabled { opacity: .5; cursor: not-allowed; }
+    .list { max-height: 330px; overflow: auto; display: grid; gap: 7px; padding-right: 2px; }
+    .row { display: grid; grid-template-columns: auto 1fr; gap: 10px; border: 1px solid var(--figma-color-border); border-radius: 8px; padding: 9px; background: var(--figma-color-bg); }
+    .row strong { display: flex; align-items: center; gap: 6px; font-size: 12px; overflow-wrap: anywhere; }
+    .row span { display: block; margin-top: 3px; font-size: 11px; color: var(--figma-color-text-secondary); overflow-wrap: anywhere; }
+    .badge { display: inline-block; padding: 1px 6px; border-radius: 999px; background: var(--figma-color-bg-secondary); border: 1px solid var(--figma-color-border); font-size: 10px; white-space: nowrap; }
+    .section-badge { color: var(--figma-color-text-brand); }
+    .frame-badge { color: var(--figma-color-text-success); }
+    .page-separator { margin-top: 6px; padding: 6px 2px 2px; font-size: 11px; font-weight: 800; color: var(--figma-color-text-secondary); text-transform: uppercase; letter-spacing: .06em; }
+    .production-fields { display: grid; grid-template-columns: 1fr; gap: 8px; }
+    label small { color: var(--figma-color-text-secondary); font-weight: 600; }
+    .actions { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+    .status { min-height: 18px; font-size: 12px; color: var(--figma-color-text-secondary); }
+    .error { color: var(--figma-color-text-danger); }
+    .empty { border: 1px dashed var(--figma-color-border); border-radius: 8px; padding: 18px; text-align: center; }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <div>
+      <h1>FINTA Exporter</h1>
+      <p>Pilih page Figma, lalu export section atau frame standalone. Bisa download ZIP atau kirim langsung ke FINTA lokal.</p>
+    </div>
+
+    <div class="meta"><p id="summary">Scanning current page...</p></div>
+
+    <div class="toolbar">
+      <label class="page-picker">
+        <div class="page-toolbar">
+          <span>Pages to scan/export</span>
+          <button id="rescan" type="button">Rescan</button>
+        </div>
+        <div id="pageChecks" class="page-grid"><div class="empty">Loading pages...</div></div>
+      </label>
+    </div>
+
+    <label>Export scale
+      <select id="scale">
+        <option value="1">1x - high quality</option>
+        <option value="0.5" selected>0.5x - safer</option>
+        <option value="0.25">0.25x - very large nodes</option>
+      </select>
+    </label>
+
+    <label>FINTA URL
+      <input id="playgroundUrl" value="http://localhost:5050" spellcheck="false">
+    </label>
+
+    <div class="production-fields">
+      <label>Project ID <small>optional metadata</small>
+        <input id="projectId" placeholder="contoh: fut-vnsp-main" spellcheck="false">
+      </label>
+    </div>
+
+    <div class="quick">
+      <button type="button" data-select="all">All</button>
+      <button type="button" data-select="none">None</button>
+      <button type="button" data-select="SECTION">Sections</button>
+      <button type="button" data-select="FRAME">Frames</button>
+    </div>
+
+    <section id="itemList" class="list"></section>
+
+    <div class="actions">
+      <button id="export" class="primary" type="button" disabled>Download ZIP</button>
+      <button id="send" type="button" disabled>Send to FINTA</button>
+      <button id="cancel" type="button">Close</button>
+    </div>
+    <div id="status" class="status"></div>
+  </main>
+
+  <script>
+    const state = { items: [], pages: [], pageIds: [], currentPageId: '', pageName: '', pendingAction: 'download' };
+    const $ = (id) => document.getElementById(id);
+
+    function setStatus(message, error = false) {
+      $('status').textContent = message || '';
+      $('status').className = error ? 'status error' : 'status';
+    }
+    function setBusy(busy) {
+      $('export').disabled = busy || !state.items.length;
+      $('send').disabled = busy || !state.items.length;
+    }
+    function selectedIds() {
+      return Array.from(document.querySelectorAll('input[type="checkbox"]:checked')).map((input) => input.value);
+    }
+    function escapeHtml(value) {
+      return String(value || '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#039;');
+    }
+    function selectedPageIds() {
+      const checked = Array.from(document.querySelectorAll('#pageChecks input[type="checkbox"]:checked')).map((input) => input.value);
+      return checked.length ? checked : (state.currentPageId ? [state.currentPageId] : []);
+    }
+    function syncPages() {
+      const wrap = $('pageChecks');
+      const previous = new Set(state.pageIds && state.pageIds.length ? state.pageIds : [state.currentPageId]);
+      wrap.innerHTML = '';
+      state.pages.forEach((page) => {
+        const label = document.createElement('label');
+        label.className = 'page-option';
+        label.innerHTML = `<input type="checkbox" value="${escapeHtml(page.id)}" ${previous.has(page.id) ? 'checked' : ''}> <span>${escapeHtml(page.name)}</span>`;
+        wrap.appendChild(label);
+      });
+      if (!state.pages.length) wrap.innerHTML = '<div class="empty">No pages found.</div>';
+    }    function renderItems() {
+      const sections = state.items.filter((item) => item.type === 'SECTION').length;
+      const frames = state.items.filter((item) => item.type === 'FRAME').length;
+      $('summary').textContent = `${state.pageName || 'Selected page'} - ${sections} section(s), ${frames} frame(s)`;
+      const list = $('itemList');
+      list.innerHTML = '';
+      if (!state.items.length) {
+        list.innerHTML = '<div class="empty"><strong>No section or standalone frame found.</strong><p>Choose another page, or make sure the frame is outside any section.</p></div>';
+        setBusy(false);
+        return;
+      }
+      let lastPage = '';
+      state.items.forEach((item, index) => {
+        if (item.pageName !== lastPage) {
+          const separator = document.createElement('div');
+          separator.className = 'page-separator';
+          separator.textContent = item.pageName;
+          list.appendChild(separator);
+          lastPage = item.pageName;
+        }
+        const row = document.createElement('label');
+        row.className = 'row';
+        row.dataset.type = item.type;
+        const badgeClass = item.type === 'SECTION' ? 'section-badge' : 'frame-badge';
+        row.innerHTML = `
+          <input type="checkbox" value="${escapeHtml(item.id)}" checked>
+          <div>
+            <strong><span class="badge ${badgeClass}">${escapeHtml(item.type)}</span>${index + 1}. ${escapeHtml(item.name)}</strong>
+            <span>${item.width}x${item.height} - x ${item.x}, y ${item.y}</span>
+          </div>`;
+        list.appendChild(row);
+      });
+      setBusy(false);
+    }
+
+    function crc32(bytes) {
+      let table = crc32.table;
+      if (!table) {
+        table = crc32.table = new Uint32Array(256);
+        for (let i = 0; i < 256; i += 1) {
+          let c = i;
+          for (let k = 0; k < 8; k += 1) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+          table[i] = c >>> 0;
+        }
+      }
+      let crc = -1;
+      for (let i = 0; i < bytes.length; i += 1) crc = (crc >>> 8) ^ table[(crc ^ bytes[i]) & 0xff];
+      return (crc ^ -1) >>> 0;
+    }
+    function u16(value) { return [value & 255, (value >>> 8) & 255]; }
+    function u32(value) { return [value & 255, (value >>> 8) & 255, (value >>> 16) & 255, (value >>> 24) & 255]; }
+    function dosDateTime(date) {
+      return { time: (date.getHours() << 11) | (date.getMinutes() << 5) | Math.floor(date.getSeconds() / 2), day: ((date.getFullYear() - 1980) << 9) | ((date.getMonth() + 1) << 5) | date.getDate() };
+    }
+    function makeZip(files) {
+      const encoder = new TextEncoder();
+      const chunks = [];
+      const central = [];
+      let offset = 0;
+      const now = dosDateTime(new Date());
+      files.forEach((file) => {
+        const name = encoder.encode(file.name);
+        const data = file.bytes instanceof Uint8Array ? file.bytes : new Uint8Array(file.bytes);
+        const crc = crc32(data);
+        const local = new Uint8Array([...u32(0x04034b50), ...u16(20), ...u16(0), ...u16(0), ...u16(now.time), ...u16(now.day), ...u32(crc), ...u32(data.length), ...u32(data.length), ...u16(name.length), ...u16(0)]);
+        chunks.push(local, name, data);
+        central.push({ name, crc, size: data.length, offset });
+        offset += local.length + name.length + data.length;
+      });
+      const centralStart = offset;
+      central.forEach((file) => {
+        const header = new Uint8Array([...u32(0x02014b50), ...u16(20), ...u16(20), ...u16(0), ...u16(0), ...u16(now.time), ...u16(now.day), ...u32(file.crc), ...u32(file.size), ...u32(file.size), ...u16(file.name.length), ...u16(0), ...u16(0), ...u16(0), ...u16(0), ...u32(0), ...u32(file.offset)]);
+        chunks.push(header, file.name);
+        offset += header.length + file.name.length;
+      });
+      const centralSize = offset - centralStart;
+      chunks.push(new Uint8Array([...u32(0x06054b50), ...u16(0), ...u16(0), ...u16(central.length), ...u16(central.length), ...u32(centralSize), ...u32(centralStart), ...u16(0)]));
+      return new Blob(chunks, { type: 'application/zip' });
+    }
+    function buildZipBlob(payload, pageGroup = null) {
+      const manifest = {
+        source: 'figma-plugin-fut-exporter',
+        exportType: 'fut_plugin_zip',
+        pageName: pageGroup?.pageName || state.pageName,
+        exportedAt: payload.exportedAt,
+        scale: payload.scale,
+        containsToken: false,
+        projectId: $('projectId')?.value.trim() || '',
+        files: (pageGroup?.exports || payload.exports).map((item, index) => ({ order: index + 1, filename: item.filename, item: item.item })),
+      };
+      const encoder = new TextEncoder();
+      const exportItems = pageGroup?.exports || payload.exports;
+      const files = exportItems.map((item) => ({ name: item.filename, bytes: new Uint8Array(item.bytes) }));
+      files.push({ name: 'manifest.json', bytes: encoder.encode(JSON.stringify(manifest, null, 2)) });
+      return makeZip(files);
+    }
+    function safeZipName() {
+      return String(state.pageName || 'figma-export').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'figma-export';
+    }
+    function groupExportsByPage(exports) {
+      const groups = new Map();
+      exports.forEach((item) => {
+        const pageId = item.item?.pageId || 'unknown-page';
+        if (!groups.has(pageId)) groups.set(pageId, { pageId, pageName: item.item?.pageName || 'Unknown page', exports: [] });
+        groups.get(pageId).exports.push(item);
+      });
+      return Array.from(groups.values());
+    }
+    function downloadZip(payload) {
+      const blob = buildZipBlob(payload);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `fut-sections-frames-${safeZipName()}.zip`;
+      link.click();
+      URL.revokeObjectURL(url);
+    }
+    async function sendZipToPlayground(payload) {
+      const baseUrl = $('playgroundUrl').value.trim().replace(/\/+$/, '');
+      if (!baseUrl) throw new Error('FINTA URL wajib diisi. Contoh: http://localhost:5050');
+      const groups = groupExportsByPage(payload.exports);
+      const results = [];
+      for (const group of groups) {
+        setStatus(`Sending ${group.pageName} to FINTA...`);
+        const headers = { 'Content-Type': 'application/zip' };
+        const projectId = $('projectId')?.value.trim() || '';
+        if (projectId) headers['X-FUT-Project-ID'] = projectId;
+        const response = await fetch(`${baseUrl}/api/plugin-import`, {
+          method: 'POST',
+          headers,
+          body: buildZipBlob(payload, group),
+        });
+        let data = {};
+        try { data = await response.json(); } catch (error) { data = {}; }
+        if (!response.ok) throw new Error(data.error || `FINTA menolak ZIP untuk ${group.pageName}. HTTP ${response.status}`);
+        results.push({...data, pageName: group.pageName});
+      }
+      return {imports: results, image_count: payload.exports.length};
+    }
+
+    function scan() {
+      setStatus('Scanning selected page...');
+      parent.postMessage({ pluginMessage: { type: 'scan-items', pageIds: selectedPageIds() } }, '*');
+    }
+    function requestExport(action) {
+      const ids = selectedIds();
+      if (!ids.length) {
+        setStatus('Pilih minimal satu section atau frame dulu.', true);
+        return;
+      }
+      state.pendingAction = action;
+      setBusy(true);
+      setStatus(`${action === 'send' ? 'Exporting and sending' : 'Exporting'} ${ids.length} item(s)...`);
+      parent.postMessage({ pluginMessage: { type: 'export-items', ids, scale: Number($('scale').value) } }, '*');
+    }
+
+    document.querySelectorAll('button[data-select]').forEach((button) => {
+      button.onclick = () => {
+        const value = button.dataset.select;
+        document.querySelectorAll('input[type="checkbox"]').forEach((input) => {
+          const type = input.closest('.row').dataset.type;
+          input.checked = value === 'all' || (value !== 'none' && type === value);
+        });
+      };
+    });
+
+    $('pageChecks').onchange = scan;
+    $('rescan').onclick = scan;
+    $('export').onclick = () => requestExport('download');
+    $('send').onclick = () => requestExport('send');
+    $('cancel').onclick = () => parent.postMessage({ pluginMessage: { type: 'cancel' } }, '*');
+
+    onmessage = async (event) => {
+      const msg = event.data.pluginMessage;
+      if (!msg) return;
+      if (msg.type === 'items') {
+        state.items = msg.items || [];
+        state.pages = msg.pages || [];
+        state.pageIds = msg.pageIds || [];
+        state.currentPageId = msg.currentPageId || '';
+        state.pageName = msg.pageName || '';
+        syncPages();
+        renderItems();
+        setStatus('');
+      }
+      if (msg.type === 'progress') setStatus(msg.message);
+      if (msg.type === 'error') {
+        setBusy(false);
+        setStatus(msg.message || 'Export failed.', true);
+      }
+      if (msg.type === 'export-complete') {
+        try {
+          if (state.pendingAction === 'send') {
+            const result = await sendZipToPlayground(msg);
+            setStatus(`Sent to FINTA: ${result.imports?.length || 0} page import(s), ${result.image_count || 0} image(s).`);
+          } else {
+            downloadZip(msg);
+            setStatus(`ZIP downloaded: ${msg.exports.length} item(s).`);
+          }
+        } catch (error) {
+          setStatus(error.message || 'Gagal mengirim ZIP ke FINTA.', true);
+        } finally {
+          setBusy(false);
+        }
+      }
+    };
+  </script>
+</body>
+</html>
+
+
+
+
+
+
+
+
+
+
+
+
+
